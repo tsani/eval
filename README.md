@@ -13,5 +13,8 @@ Done:
 
 To do:
 - Typechecking: presently there are a few runtime checks instead.
+- Proper build system: currently I build with a bash script. A real build system
+  will be important for parsing as I want to use lexing/parsing libraries
+  instead of doing it myself.
 - Parsing: for now I use a "shallow embedding" into OCaml to construct sample
   programs. See `main.ml`.

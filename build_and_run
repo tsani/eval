@@ -1,3 +1,3 @@
 #!/bin/bash
 
-ocamlopt -o out syntax.ml pretty.ml eval.ml main.ml && exec ./out
+ocamlopt -o out result.ml util.ml syntax.ml pretty.ml eval.ml tMVar.ml unify.ml typecheck.ml main.ml && exec ./out

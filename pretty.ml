@@ -19,6 +19,12 @@ let rec print_tm lvl (ppf : formatter) : tm -> unit = function
       (print_tm 9) e1
       (print_tm 10) e2
       rparen (lvl > 9)
+  | Let (e1, e2) ->
+    fprintf ppf "%a@[<v 2>let ! = @[%a@] in @,@[%a@]@]%a"
+      lparen (lvl > 8)
+      (print_tm 0) e1
+      (print_tm 0) e2
+      rparen (lvl > 8)
   | Match (e, cases) ->
     fprintf ppf "%a@[<v 2>match @[%a@] with @,%a@]end%a"
       lparen (lvl > 8)

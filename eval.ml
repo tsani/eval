@@ -39,14 +39,22 @@ end
 
 let debug_print (s : State.t) = Format.fprintf s.debug_ppf
 
-let rec match_pattern : tm * pattern -> env option = function
-  | Num n1, NumPattern n2 -> if n1 = n2 then Some [] else None
-  | e, VariablePattern -> Some [e]
-  | _, WildcardPattern -> Some []
+(* Matches a term against a pattern, extending the given environment with new bindings.
+ * Produces None if matching fails.
+ *)
+let rec match_pattern (env : env) : tm * pattern -> env option = function
+  | Num n1, NumPattern n2 -> if n1 = n2 then Some env else None
+  | e, VariablePattern -> Some (Env.extend e env) 
+  | _, WildcardPattern -> Some env
   | Const (ctor_name, spine), ConstPattern (pat_ctor_name, pat_spine) -> begin match () with
     | _ when not (ctor_name = pat_ctor_name) -> None
     | _ when not (List.length spine = List.length pat_spine) -> failwith "constructor spine mismatch"
-    | _ -> Util.(map_option Env.concats (sequence_options (List.map match_pattern @@ List.combine spine pat_spine)))
+    | _ ->
+      List.combine spine pat_spine |> List.fold_left begin fun env (p, e) ->
+        match env with
+        | Some env -> match_pattern env (p, e)
+        | None -> None
+      end (Some env)
     end
   | _ -> failwith "pattern matching failed"
 
@@ -74,19 +82,18 @@ let rec eval (s : State.t) (env : env) : tm -> tm = function
     eval s (Env.extend x env) e2
   | Match (e, cases) -> eval_match s env (eval s env e) cases
   (* | Rec e ->
-    eval s (extend_env e env) e *)
+    eval s (Env.extend e env) e *)
   | Clo (env, e) -> Clo (env, e)
   | Const (ctor_name, spine) -> Const (ctor_name, List.map (eval s env) spine)
 
 and eval_match (s : State.t) (env : env) (scrutinee : tm) : case list -> tm = function
   | [] -> failwith "pattern matching failed"
-  | Case (pattern, body) :: cases -> match match_pattern (scrutinee, pattern) with
+  | Case (pattern, body) :: cases -> match match_pattern env (scrutinee, pattern) with
     | Some env' ->
-      let env'' = Env.concat env' env in
       debug_print s "matched case for pattern @[%a@], new env is @[%a@]@,"
        (Pretty.print_pattern 0) pattern
-       (Pretty.print_env) env'';
-      eval s env'' body
+       (Pretty.print_env) env';
+      eval s env' body
     | None -> eval_match s env scrutinee cases
 
 let eval_decl (s : State.t) (d : decl) : State.t = match d with

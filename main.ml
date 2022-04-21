@@ -117,7 +117,7 @@ let program = [
   };
   TmDecl {
     name = "list_of_lists";
-    typ = mono @@ Sugar.ty_nat;
+    typ = mono @@ Sugar.(ty_list (ty_list ty_nat));
     recursive = false;
     body = Some Sugar.(apps (r "replicate") [r "sample_list"; nat 5])
   };
@@ -130,7 +130,7 @@ let program = [
         lam begin
           case (v 0) [
             pnil --> nil;
-            pcons pv pv --> cons (v 3 @@@ v 1) (apps (r "map") [v 3 @@@ v 0]);
+            pcons pv pv --> cons (v 3 @@@ v 1) (apps (r "map") [v 3; v 0]);
           ]
         end
       end
@@ -146,22 +146,44 @@ let program = [
 
 open Format
 
+let print_mismatch_kind ppf : Typecheck.unify_kind -> unit = function
+  | `scru_pat (scru_and_tp, pat_and_tp) ->
+    fprintf ppf "@[<v>@[<v 2>when unifying the match scrutinee@,@[%a@]@]@,@[<v 2>with the pattern@,@[%a@]@]@]"
+      Pretty.print_tm_tp scru_and_tp
+      Pretty.print_pat_tp pat_and_tp
+  | `app e -> fprintf ppf "when expecting @[%a@] to have a function type." (Pretty.print_tm 0) e
+  | `ctor_spine ((ctor, ctor_tp), (sp, inf_ctor_tp)) ->
+    fprintf ppf "@[<v>@[<hv 2>when matching constructor@ @[<hv 2>%s :@ %a@]@]@,@[<hv 2>with spine@ %a@]@,@[hv 2>for which the inferred constructor type is@ %a@]@]"
+      ctor
+      (Pretty.print_tp 0) ctor_tp
+      (Pretty.print_spine 10) sp
+      (Pretty.print_tp 0) inf_ctor_tp
+  | `ctor_pat_spine ((ctor, ctor_tp), (pat_sp, inf_ctor_tp)) ->
+    fprintf ppf "@[<v>@[<hv 2>when matching constructor@ @[<hv 2>%s :@ %a@]@]@,@[<hv 2>with pattern spine@ %a@]@,@[hv 2>for which the inferred constructor type is@ %a@]@]"
+      ctor
+      (Pretty.print_tp 0) ctor_tp
+      (Pretty.print_pat_spine 10) pat_sp
+      (Pretty.print_tp 0) inf_ctor_tp
+  | `case_body (body, body_tp, body_tp') ->
+    fprintf ppf "@[<v>@[<hv 2>when unifying the inferred type@ %a@]@,@[<hv 2>of the case body@ %a@]@,@[<hv 2>against the inferred type of the other branches@ %a@]@]"
+      (Pretty.print_tp 0) body_tp
+      (Pretty.print_tm 0) body
+      (Pretty.print_tp 0) body_tp'
+  | `decl (c, user_tp, inf_tp) ->
+    fprintf ppf "@[<v>@[<hv 2>when unifying the given type@ %a@]@,of the declaration for `%s'@,@[<hv 2>against the inferred type@ %a@]@]"
+      (Pretty.print_tp 0) user_tp
+      c
+      (Pretty.print_tp 0) inf_tp
+      
+
 let print_type_error ppf : Typecheck.TypeError.t -> unit = function
-  | `mismatch (e, t1, t2) ->
-    fprintf ppf "@[<v 2>Type mismatch arising from term @[%a@]@,@[<2>Expected:%a%a@]@,@[<2>Inferred:%a%a@]@]"
-      (Pretty.print_tm 0) e
+  | `mismatch (k, t1, t2) ->
+    fprintf ppf "@[<v 2>Type mismatch.@,@[<2>Expected:%a%a@]@,@[<2>Inferred:%a%a@]@,%a@]"
       pp_print_space ()
       (Pretty.print_tp 0) t1
       pp_print_space ()
       (Pretty.print_tp 0) t2
-  | `pat_mismatch ((scru, t_scru), (pat, t_pat)) ->
-    fprintf ppf "@[<v 2>Type mismatch between pattern and match scrutinee.@,";
-    fprintf ppf "@[<2>Scrutinee:%a%a@]@,"
-      pp_print_space ()
-      Pretty.print_tm_tp (scru, t_scru);
-    fprintf ppf "@[<2>Pattern:%a%a@]@]"
-      pp_print_space ()
-      Pretty.print_pat_tp (pat, t_pat)
+      print_mismatch_kind k
   | `infinite_type (x, tp) ->
     fprintf ppf "@[<v 2>Cannot construct infinite type.@,Type variable %s occurs in type @[%a@]@]"
       x

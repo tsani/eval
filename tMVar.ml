@@ -67,7 +67,7 @@ let rec apply_sub (tmvars : sub) : tp -> tp = function
   | Arrow (t1, t2) -> Arrow (apply_sub tmvars t1, apply_sub tmvars t2)
   | TVar x -> TVar x
   | TMVar x -> begin match lookup tmvars x with
-    | `inst t -> apply_sub tmvars t
+    | `inst t -> Format.(fprintf err_formatter "going under var %s@." x); apply_sub tmvars t
     | `uninst -> TMVar x
     | `not_found -> raise @@ Util.Invariant "no free TMVars allowed"
   end
@@ -81,3 +81,33 @@ let prune_sub : sub -> sub = Util.StringMap.filter begin fun _ -> function
   | Some _ -> false
   | _ -> true
 end
+
+let print_sub ppf (tmvars : sub) : unit =
+  let open Format in
+  let print_inst ppf = function
+    | None -> fprintf ppf "<uninst>"
+    | Some tp -> Pretty.print_tp 0 ppf tp
+  in
+  pp_print_list ~pp_sep: pp_print_cut
+    (fun ppf (x, inst) -> fprintf ppf "- %s = @[%a@]" x print_inst inst)
+    ppf
+    (Util.StringMap.bindings tmvars)
+
+(* Decides whether a tmvar appears in a type *)
+let rec occurs (tmvars : sub) (x : tmvar_name) : tp -> bool = function
+  | Named (_, ts) -> List.exists (occurs tmvars x) ts
+  | Int -> false
+  | TVar _ -> false
+  | Arrow (t1, t2) -> occurs tmvars x t1 || occurs tmvars x t2
+  | TMVar y when x = y -> true
+  | TMVar y -> match lookup' tmvars y with
+    | `uninst -> false
+    | `inst t -> occurs tmvars x t
+
+(* Resolves a chain of TMVar-TMVar instantiations. *)
+let rec chase (tmvars : sub) (t : tp) : tp = match t with
+  | TMVar x -> begin match lookup' tmvars x with
+    | `uninst -> TMVar x
+    | `inst t -> chase tmvars t
+  end
+  | _ -> t

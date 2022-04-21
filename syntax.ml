@@ -1,6 +1,6 @@
 type ctor_name = string
 type tp_name = string
-type var_name = string
+type tm_name = string
 type tvar_name = string
 type tmvar_name = string (* of the form a#n for an integer n *)
 
@@ -32,7 +32,7 @@ end
 type tm
   = Num of int
   | Var of index
-  | Ref of var_name
+  | Ref of tm_name
   | Fun of tm
   | App of tm * tm
   | Let of tm * tm
@@ -58,7 +58,7 @@ let case_body (Case (_, e)) = e
 let case_pattern (Case (p, _)) = p
 
 type tm_decl = {
-  name : var_name;
+  name : tm_name;
   typ : tp_sc;
   recursive : bool;
   (* ^ whether the definition is recursive *)
@@ -200,10 +200,47 @@ module Sugar = struct
   let const name spine = Const (name, spine)
   let (@@@) e1 e2 = App (e1, e2)
   let (-->) pat e = (pat, e)
+  (* Constructs an application of a function of multiple arguments *)
+  let apps head spine = List.fold_left (fun head arg -> head @@@ arg) head spine
+
+  (* 'type reference' *)
+  let tr c spine = Named (c, spine)
+  let tr0 c = Named (c, [])
+  let tr1 c tp = Named (c, [tp])
+  let arrow t1 t2 = Arrow (t1, t2)
 
   let ignored = WildcardPattern
   let pconst name pats = ConstPattern (name, pats)
   let pv = VariablePattern
+
+  (* type-specific sugar *)
+
+  (* Constructs a nested arrow type for a function of multiple parameters. *)
+  let arrows arg_tps result_tp = List.fold_right arrow arg_tps result_tp
+
+  let ty_list tp = tr1 "List" tp
+  let ty_nat = tr0 "Nat"
+
+  let zero = const "Z" []
+  let succ n = const "S" [n]
+
+  let pzero = pconst "Z" []
+  let psucc p = pconst "S" [p]
+
+  let nil = const "Nil" []
+  let cons e l = const "Cons" [e; l]
+
+  let pnil = pconst "Nil" []
+  let pcons p1 p2 = pconst "Cons" [p1; p2]
+
+  (* Transform an OCaml list of terms into a Eval list *)
+  let list es = List.fold_right cons es nil
+
+  (* Transform a positive OCaml integer into an Eval Nat. *)
+  let rec nat = function
+    | 0 -> const "Z" []
+    | n -> const "S" [nat @@ n - 1]
+
 end
 
 (* Looks up a variable in a context or an environment. (They have the same structure.) *)

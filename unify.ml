@@ -41,5 +41,6 @@ and unify_tmvar (tmvars : TMVar.sub) (x : tmvar_name) (tp : tp) : TMVar.sub resu
   match TMVar.lookup tmvars x with
   | `not_found -> raise (Util.Invariant "no free TMVars allowed")
   | `inst tp' -> types tmvars (tp', tp)
+  | `uninst when tp = TMVar x -> Result.ok tmvars (* unifying a tmvar with itself is a no-op *)
   | `uninst when occurs x tp -> Result.error @@ `occurs_check (x, tp)
   | `uninst -> Result.ok (TMVar.extend_sub tmvars ~inst: (Some tp) x)

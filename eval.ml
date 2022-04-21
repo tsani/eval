@@ -20,7 +20,7 @@ module RuntimeError = struct
   type t =
     | UnboundVariable of env * index
     | ApplyNonClo of tm
-    | InfiniteRecursion of var_name
+    | InfiniteRecursion of tm_name
 
   let print_runtime_error ppf : t -> unit = let open Format in function
     | UnboundVariable (env, i) ->

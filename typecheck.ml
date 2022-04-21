@@ -1,5 +1,36 @@
 open Syntax
 
+type infer_env = {
+  ppf : Format.formatter;
+  sg : Signature.t;
+  ctx : Ctx.t;
+}
+
+type infer_state = {
+  tmvars : TMVar.sub;
+}
+
+let map_tmvars (f : TMVar.sub -> TMVar.sub) (s : infer_state) : infer_state =
+  { s with tmvars = f s.tmvars }
+
+(* Examines the current TMVar substitution to compute something and possibly transform the substitution. *)
+let with_tmvars (f : TMVar.sub -> TMVar.sub * 'a) (s : infer_state) : infer_state * 'a =
+  let tmvars, x = f s.tmvars in
+  { s with tmvars }, x
+
+let fresh_tmvar (s : infer_state) (prefix : string) : infer_state * tmvar_name =
+  s |> with_tmvars (fun tmvars -> TMVar.fresh tmvars prefix)
+
+(* Transforms teh context according to a function. *)
+let map_ctx (f : Ctx.t -> Ctx.t) (env : infer_env) : infer_env =
+  { env with ctx = f env.ctx }
+
+let extend_ctx (env : infer_env) (d : tp_sc) : infer_env =
+  env |> map_ctx (fun ctx -> Ctx.extend ctx d)
+
+let apply_sub_to_ctx (tmvars : TMVar.sub) : infer_env -> infer_env =
+  map_ctx (TMVar.apply_sub_to_ctx tmvars)
+
 (* A Type MetaVariable is essentially a free type variable, together with
    a possible instantiation
    A TMVar is written like a#n where n is a number.
@@ -11,17 +42,17 @@ open Syntax
  *
  * Util.Invariant: The resulting monotype contains no TVar, i.e. it is a genuine monotype.
  *)
-let instantiate (tmvars : TMVar.sub) ((tbinders, tp) : tp_sc) : TMVar.sub * tp =
+let instantiate (s : infer_state) ((tbinders, tp) : tp_sc) : infer_state * tp =
   match tbinders with
   (* Optimization: if there are no binders, skip doing anything *)
-  | [] -> (tmvars, tp)
+  | [] -> (s, tp)
   | _ ->
   (* Otherwise we need to scan some lists, build a map, and traverse the type *)
-    let go prefix (tmvars, tmvar_name_pairings) =
-      let (tmvars', x) = TMVar.fresh tmvars prefix in
-      (tmvars', (prefix, x) :: tmvar_name_pairings)
+    let go prefix (s, tmvar_name_pairings) =
+      let (s, x) = fresh_tmvar s prefix in
+      (s, (prefix, x) :: tmvar_name_pairings)
     in
-    let tmvars, tmvar_name_pairings = List.fold_right go tbinders (tmvars, []) in
+    let s, tmvar_name_pairings = List.fold_right go tbinders (s, []) in
     let rec rename_tvars_to_tmvars : tp -> tp = function
       | TVar a -> begin match List.assoc_opt a tmvar_name_pairings with
         | None -> raise (Util.Invariant "no free TVars allowed")
@@ -32,7 +63,12 @@ let instantiate (tmvars : TMVar.sub) ((tbinders, tp) : tp_sc) : TMVar.sub * tp =
       | TMVar x -> TMVar x
       | Int -> Int
     in
-    (tmvars, rename_tvars_to_tmvars tp)
+    (s, rename_tvars_to_tmvars tp)
+
+let instantiate_ctor_type (env : infer_env) (s : infer_state) (c : ctor_name) : infer_state * tp =
+  let cd = Signature.lookup_ctor' c env.sg in
+  let td = Signature.lookup_tp' cd.owner_name env.sg in
+  instantiate s (syn_ctor_type td cd)
 
 (* Constructs a polytype from a monotype having only uninstantiated TMVars by
  * converting into TVars those uninstantiated TMVars not appearing in the given
@@ -63,131 +99,170 @@ let generalize (outer : tmvar_name list) (tp : tp) : tp_sc =
  * generating type errors.
  *)
 
-type type_error = [
-  | `mismatch of tp * tp
-  | `infinite_type of tmvar_name * tp
+module TypeError = struct
+  type t = [
+    | `mismatch of tm * tp * tp
+    | `pat_mismatch of (tm * tp) * (pattern * tp)
+    | `infinite_type of tmvar_name * tp
+  ]
+
+  type term_stack = tm list
+
+  type report = {
+    (* The stack of (sub)terms that leads to the error. *)
+    term_stack : term_stack;
+
+    (* The actual error encountered. *)
+    error : t;
+  }
+
+  let report (error : t) = { error; term_stack = [] }
+end
+
+type 'a result = (TypeError.report, 'a) Result.t
+
+(* Pushes a term onto the error term stack in case the given Result is an Error. *)
+let push e r = Result.map_error TypeError.(fun r -> { r with term_stack = e :: r.term_stack }) r
+
+type unify_kind = [
+  (* Unifying the inferred type of a pattern with the inferred type the case scrutinee. *)
+  | `scru_pat of tm * pattern
+
+  (* Unifying the subject of an application with a function type. *)
+  | `app of tm * tm
+
+  (* Unifying a synthesized spine function type against the constructor type. *)
+  | `ctor_spine of ctor_name * spine
+
+  (* Unifying a synthesized pattern-spine function type against the constructor type. *)
+  | `ctor_pat_spine of ctor_name * pattern list
+
+  (* Unifying a case body type with the type of the match statement. *)
+  | `case_body of tm
+
+  (* Unifying a user-supplied annotation with the inferred type of a declared term. *)
+  | `decl of tm_name
 ]
 
-type 'a result = (type_error, 'a) Result.t
-
-let unify : 'a Unify.result -> 'a result =
-  let f : Unify.unify_error -> type_error = function 
+(* Interprets a unification result as a typechecking result. *)
+let unify (k : unify_kind) : 'a Unify.result -> 'a result =
+  let f : Unify.unify_error -> TypeError.t = function 
     | `occurs_check (x, tp) -> `infinite_type (x, tp)
-    | `mismatch (t1, t2) -> `mismatch (t1, t2)
+    | `mismatch (t1, t2) -> begin match k with
+      | `scru_pat (scru, p) -> `pat_mismatch ((scru, t1), (p, t2))
+      | `app (f, _) -> `mismatch (f, t1, t2)
+    end
   in
-  Result.map_error f
+  Result.map_error (fun err -> TypeError.report @@ f err)
 
-let rec infer_tm (sg : Signature.t) (tmvars : TMVar.sub) (ctx : Ctx.t) : tm -> (TMVar.sub * tp) result = function
-  | Num _ -> Result.ok (tmvars, Int)
-  | Var i -> begin match lookup_var ctx i with
+let rec infer_tm (env : infer_env) (s : infer_state) : tm -> (infer_state * tp) result = function
+  | Num _ -> Result.ok (s, Int)
+  | Var i -> begin match lookup_var env.ctx i with
     | None -> raise (Util.Invariant "unbound variable")
-    | Some tpsc -> Result.ok (instantiate tmvars tpsc)
+    | Some tpsc -> Result.ok (instantiate s tpsc)
   end
-  | Ref c -> begin match Signature.lookup_tm c sg with
+  | Ref c -> begin match Signature.lookup_tm c env.sg with
     | None -> raise (Util.Invariant "unbound reference")
-    | Some ({ typ }) -> Result.ok (instantiate tmvars typ)
+    | Some ({ typ }) -> Result.ok (instantiate s typ)
   end
-  | Const (c, spine) -> begin match Signature.lookup_ctor c sg with
-    | None -> raise (Util.Invariant "unbound constructor")
-    | Some ({ owner_name } as cd) ->
-      (* by invariant, each owner_name is valid *)
-      let td = Signature.lookup_tp' owner_name sg in
-      let tmvars, ctor_tp = instantiate tmvars (syn_ctor_type td cd) in
-      Result.bind (infer_spine sg tmvars ctx spine) @@ fun (tmvars, spine_tps) ->
-      infer_app_spine sg tmvars ctx ctor_tp spine_tps
-  end
+  | Const (c, spine) ->
+    let s, ctor_tp = instantiate_ctor_type env s c in
+    Result.bind (infer_ctor_from_spine env s spine) @@ fun (s, inferred_ctor_tp, result_tp) ->
+    Result.bind (unify (`ctor_spine (c, spine)) (Unify.types s.tmvars (ctor_tp, inferred_ctor_tp))) @@ fun tmvars ->
+    Result.ok ({ s with tmvars }, result_tp)
   | Fun e ->
-    let tmvars, x = TMVar.fresh tmvars "a" in
+    let s, x = fresh_tmvar s "a" in
     let tp_a = TMVar x in
-    let ctx = Ctx.extend ctx @@ mono tp_a in
-    Result.bind (infer_tm sg tmvars ctx e) @@ fun (tmvars, tp_b) ->
-    Result.ok (tmvars, Arrow (tp_a, tp_b))
+    let env = extend_ctx env @@ mono tp_a in
+    Result.bind (push e @@ infer_tm env s e) @@ fun (s, tp_b) ->
+    Result.ok (s, Arrow (tp_a, tp_b))
   | App (e1, e2) ->
-    Result.bind (infer_tm sg tmvars ctx e1) @@ fun (tmvars, f_tp) ->
-    Result.bind (infer_tm sg tmvars ctx e2) @@ fun (tmvars, arg_tp) ->
-    infer_app_spine sg tmvars ctx f_tp [arg_tp]
+    Result.bind (push e1 @@ infer_tm env s e1) @@ fun (s, f_tp) ->
+    Result.bind (push e2 @@ infer_tm env s e2) @@ fun (s, arg_tp) ->
+    let s, x = fresh_tmvar s "a" in
+    let inferred_f_tp = Arrow (arg_tp, TMVar x) in
+    Result.bind (unify (`app (e1, e2)) (Unify.types s.tmvars (f_tp, inferred_f_tp))) @@ fun tmvars ->
+    Result.ok ({ s with tmvars }, TMVar x)
   | Match (e1, cases) ->
-    Result.bind (infer_tm sg tmvars ctx e1) @@ fun (tmvars, scru_tp) ->
-    infer_match sg tmvars ctx scru_tp cases
+    let open Result in
+    bind (push e1 @@ infer_tm env s e1) @@ fun (s, scru_tp) ->
+    let s, x = fresh_tmvar s "b" in
+    let rec go s = function
+      | [] -> Result.ok s
+      | Case (pat, body) :: cases ->
+        bind (infer_pat env s pat) @@ fun (env', s, pat_tp) ->
+        bind (unify (`scru_pat (e1, pat)) (Unify.types s.tmvars (scru_tp, pat_tp))) @@ fun tmvars ->
+        bind (infer_tm env' { s with tmvars } body) @@ fun (s, body_tp) ->
+        bind (unify (`case_body body) (Unify.types s.tmvars (TMVar x, body_tp))) @@ fun tmvars ->
+        go { s with tmvars } cases
+    in
+    bind (go s cases) @@ fun s ->
+    Result.ok (s, TMVar x)
   | Let (e1, e2) ->
-    Result.bind (infer_tm sg tmvars ctx e1) @@ fun (tmvars, scru_tp) ->
-    let ctx = TMVar.apply_sub_to_ctx tmvars ctx in
-    let scru_tp = TMVar.apply_sub tmvars scru_tp in
-    let outer_tmvars = TMVar.all_in_ctx ctx in
+    Result.bind (push e1 @@ infer_tm env s e1) @@ fun (s, scru_tp) ->
+    let env = apply_sub_to_ctx s.tmvars env in
+    let scru_tp = TMVar.apply_sub s.tmvars scru_tp in
+    let outer_tmvars = TMVar.all_in_ctx env.ctx in
     let tp_sc = generalize outer_tmvars scru_tp in
-    let tmvars = TMVar.prune_sub tmvars in
-    let ctx = Ctx.extend ctx tp_sc in
-    infer_tm sg tmvars ctx e2
+    let s = map_tmvars TMVar.prune_sub s in
+    let env = extend_ctx env tp_sc in
+    push e2 @@ infer_tm env s e2
 
-and infer_spine (sg : Signature.t) (tmvars : TMVar.sub) (ctx : Ctx.t) : spine -> (TMVar.sub * tp list) result =
+(* Infers the type of a function this spine would be applicable to.
+ * infer_ctor_from_spine E S sp = (S', T_f, T_return)
+ * where T_f = T1 -> ... -> Tn -> T_return
+ * and each Ti is inferred from the corresponding sp[i]
+ * and T_return is a fresh TMVar
+ *)
+and infer_ctor_from_spine (env : infer_env) (s : infer_state) : spine -> (infer_state * tp * tp) result =
   function
-  | [] -> Result.ok @@ (tmvars, [])
-  | e :: es ->
-    Result.bind (infer_tm sg tmvars ctx e) @@ fun (tmvars, tp) ->
-    Result.bind (infer_spine sg tmvars ctx es) @@ fun (tmvars, tps) ->
-    Result.ok (tmvars, tp :: tps)
-
-and infer_match (sg : Signature.t) (tmvars : TMVar.sub) (ctx : Ctx.t) (scru_tp : tp) : case list -> (TMVar.sub * tp) result = function
   | [] ->
-    let tmvars, x = TMVar.fresh tmvars "a" in
-    Result.ok (tmvars, TMVar x)
-  | case :: cases ->
-    let open Result.Syntax in
-    infer_case sg tmvars ctx scru_tp case $ fun (tmvars, body_tp) ->
-    infer_match sg tmvars ctx scru_tp cases $ fun (tmvars, body_tp') ->
-    unify (Unify.types tmvars (body_tp, body_tp')) $ fun tmvars ->
-    Result.ok (tmvars, body_tp)
-
-and infer_case (sg : Signature.t) (tmvars : TMVar.sub) (ctx : Ctx.t) (scru_tp : tp) : case -> (TMVar.sub * tp) result =
-  fun (Case (pat, body)) ->
-  let open Result.Syntax in
-  infer_pat sg tmvars ctx pat $ fun (ctx', tmvars, tp) ->
-  unify (Unify.types tmvars (scru_tp, tp)) $ fun tmvars ->
-  infer_tm sg tmvars ctx' body
+    let s, x = fresh_tmvar s "s" in
+    Result.ok @@ (s, TMVar x, TMVar x)
+  | e :: es ->
+    Result.bind (push e @@ infer_tm env s e) @@ fun (s, arg_tp) ->
+    Result.bind (infer_ctor_from_spine env s es) @@ fun (s, f_tp, result_tp) ->
+    Result.ok (s, Arrow (arg_tp, f_tp), result_tp)
 
 (* Infers the type of a pattern. The pattern type must then be unified with the scrutinee type.
  * Extends the given context with bindings for the variables defined in the pattern.
  *)
-and infer_pat (sg : Signature.t) (tmvars : TMVar.sub) (ctx : Ctx.t) : pattern -> (Ctx.t * TMVar.sub * tp) result =
+and infer_pat (env : infer_env) (s : infer_state) : pattern -> (infer_env * infer_state * tp) result =
   function
   | WildcardPattern ->
-    let tmvars, x = TMVar.fresh tmvars "p" in
-    Result.ok (ctx, tmvars, TMVar x)
+    let s, x = fresh_tmvar s "p" in
+    Result.ok (env, s, TMVar x)
   | VariablePattern ->
-    let tmvars, x = TMVar.fresh tmvars "p" in
-    Result.ok (Ctx.extend ctx (mono @@ TMVar x), tmvars, TMVar x)
+    let s, x = fresh_tmvar s "p" in
+    Result.ok (extend_ctx env (mono @@ TMVar x), s, TMVar x)
   | NumPattern _ ->
-    Result.ok (Ctx.empty, tmvars, Int)
+    Result.ok (env, s, Int)
   | ConstPattern (c, pat_spine) ->
-    let cd = Signature.lookup_ctor' c sg in
-    let td = Signature.lookup_tp' cd.owner_name sg in
-    let tmvars, ctor_tp = instantiate tmvars (syn_ctor_type td cd) in
-    Result.bind (infer_pat_spine sg tmvars ctx pat_spine) @@ fun (ctx, tmvars, pat_spine_tps) ->
-    Result.bind (infer_app_spine sg tmvars ctx ctor_tp pat_spine_tps) @@ fun (tmvars, tp) ->
-    Result.ok (ctx, tmvars, tp)
+    let s, ctor_tp = instantiate_ctor_type env s c in
+    Result.bind (infer_ctor_from_pat_spine env s pat_spine) @@ fun (env, s, inferred_ctor_tp, result_tp) ->
+    Result.bind (unify (`ctor_pat_spine (c, pat_spine)) (Unify.types s.tmvars (ctor_tp, inferred_ctor_tp))) @@ fun tmvars ->
+    Result.ok (env, { s with tmvars }, result_tp)
 
-and infer_pat_spine (sg : Signature.t) (tmvars : TMVar.sub) (ctx : Ctx.t) : pattern list -> (Ctx.t * TMVar.sub * tp list) result =
-  function
-  | [] -> Result.ok (ctx, tmvars, [])
-  | pat :: pat_spine ->
-    Result.bind (infer_pat sg tmvars ctx pat) @@ fun (ctx, tmvars, tp) ->
-    Result.bind (infer_pat_spine sg tmvars ctx pat_spine) @@ fun (ctx, tmvars, tps) ->
-    Result.ok (ctx, tmvars, tp :: tps)
-
-(* Given a spine ts consisting of n types, tp1 ... tpn, unify
- * the given function type f_tp against tp1 -> ... -> tpn -> B
- * The result is the leftover type B.
+(* Given a spine t1, ..., tn, constructs the type of a constructor that would accept this spine.
+ * Let T1, ..., Tn be the types of the spine's elements. Then the type T1 -> ... -> Tn -> X
+ * would be the type of such a constructor, where X is an undetermined type.
+ * That makes sense because it's the constructor that decides what the type being constructed in.
+ * The same spine can be used on various different constructors to make different types.
  *)
-and infer_app_spine (sg : Signature.t) (tmvars : TMVar.sub) (ctx : Ctx.t) (f_tp : tp) : tp list -> (TMVar.sub * tp) result = function
-  | [] -> Result.ok (tmvars, f_tp)
-  | tp_arg :: spine ->
-    let open Result.Syntax in
-    let tmvars, tp_b = TMVar.fresh tmvars "b" in
-    let t_arr = Arrow (tp_arg, TMVar tp_b) in
-    unify (Unify.types tmvars (t_arr, f_tp)) $ fun tmvars ->
-    infer_app_spine sg tmvars ctx (TMVar tp_b) spine
+and infer_ctor_from_pat_spine (env : infer_env) (s : infer_state) : pattern list -> (infer_env * infer_state * tp * tp) result =
+  function
+  | [] ->
+    let s, x = fresh_tmvar s "s" in
+    Result.ok (env, s, TMVar x, TMVar x)
+  | pat :: pat_spine ->
+    Result.bind (infer_pat env s pat) @@ fun (env, s, arg_tp) ->
+    Result.bind (infer_ctor_from_pat_spine env s pat_spine) @@ fun (env, s, f_tp, result_tp) ->
+    Result.ok (env, s, Arrow (arg_tp, f_tp), result_tp)
 
-let check_decl (sg : Signature.t) : decl -> Signature.t result = function
+let make_env ppf (sg : Signature.t) : infer_env =
+  { sg; ctx = Ctx.empty; ppf }
+
+let check_decl ppf (sg : Signature.t) : decl -> Signature.t result = function
   | TpDecl d -> Result.ok @@ Signature.declare_tp sg d
   | TmDecl ({ recursive; typ; name; body } as d) ->
     let tmvars, x = TMVar.fresh TMVar.empty_sub "a" in
@@ -196,14 +271,14 @@ let check_decl (sg : Signature.t) : decl -> Signature.t result = function
     | None -> Result.ok @@ sg
     | Some body ->
       let open Result.Syntax in
-      infer_tm sg tmvars Ctx.empty body $ fun (tmvars, tp) ->
+      infer_tm (make_env ppf sg) { tmvars } body $ fun (s, tp) ->
       (* Unify the user-supplied type as expected type *)
-      let tmvars, user_tp = instantiate tmvars typ in
-      unify (Unify.types tmvars (user_tp, tp)) $ fun tmvars ->
+      let s, user_tp = instantiate s typ in
+      unify (`decl name) (Unify.types s.tmvars (user_tp, tp)) $ fun tmvars ->
       (* by unification, [tmvars]typ = [tmvars]tp *)
       let tp = TMVar.apply_sub tmvars user_tp in
       let tpsc = generalize [] tp in
       Result.ok @@ Signature.declare_tm sg { d with typ = tpsc }
 
-let check_program (sg : Signature.t) : program -> Signature.t result =
-  List.fold_left (fun sg d -> Result.bind sg @@ fun sg -> check_decl sg d) (Result.ok sg)
+let check_program ppf (sg : Signature.t) : program -> Signature.t result =
+  List.fold_left (fun sg d -> Result.bind sg @@ fun sg -> check_decl ppf sg d) (Result.ok sg)

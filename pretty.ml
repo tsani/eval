@@ -27,7 +27,7 @@ let rec print_tm lvl (ppf : formatter) : tm -> unit = function
   | Var i -> fprintf ppf "!%s" (string_of_int i)
   | Ref f -> fprintf ppf "%s" f
   | Fun e ->
-    fprintf ppf "%a@[<hv 2>fun -> @,%a@]%a"
+    fprintf ppf "%a@[<hv 2>fun ! -> @,%a@]%a"
       lparen (lvl > 0)
       (print_tm 0) e
       rparen (lvl > 0)

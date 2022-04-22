@@ -208,9 +208,11 @@ let sg =
   let ppf = Format.err_formatter in
   fprintf ppf "@[<v>";
   let open Result in match Typecheck.check_program ppf Signature.empty program with
-  | Ok x -> fprintf ppf "Typechecking succeeded!@,@]"; x
   | Error report ->
-    fprintf ppf "@[<v 2>Type error.@,%a@]@]" print_error_report report;
-    raise Util.NotImplemented
-
-let _ = eval_program (State.empty Format.err_formatter) program
+    fprintf ppf "@[<v 2>Type error.@,%a@]@]@." print_error_report report;
+  | Ok _ ->
+    fprintf ppf "Typechecking succeeded!@,@]@.";
+    let open Result in
+    match eval_program (State.empty Format.err_formatter) program with
+    | Error e -> fprintf ppf "@[<v 2>Runtime error.@,%a@]@." Eval.RuntimeError.print e
+    | Ok _ -> fprintf ppf "Evaluation finished.@."

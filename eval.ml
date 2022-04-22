@@ -21,20 +21,26 @@ module RuntimeError = struct
     | UnboundVariable of env * index
     | ApplyNonClo of tm
     | InfiniteRecursion of tm_name
+    | PatternMatchingFailed of tm * pattern list
 
-  let print_runtime_error ppf : t -> unit = let open Format in function
+  let print ppf : t -> unit = let open Format in function
     | UnboundVariable (env, i) ->
-      fprintf ppf "Unbound variable %d in environment %a" i Pretty.print_env env
+      fprintf ppf "@[<v 2>Unbound variable %d in environment@ %a@]" i Pretty.print_env env
     | ApplyNonClo e ->
-      fprintf ppf "Cannot apply non-closure %a" (Pretty.print_tm 0) e
+      fprintf ppf "@[<v 2>Cannot apply non-closure@ %a@]" (Pretty.print_tm 0) e
     | InfiniteRecursion x ->
       fprintf ppf "Infinite recursion detected in definition for %s" x
+    | PatternMatchingFailed (e, pats) ->
+      fprintf ppf "@[<hv>@[<hv 2>Failed to match term@ %a]@ @[<v 2>against any of the patterns:@ %a@]@]"
+        (Pretty.print_tm 0) e
+        (pp_print_list ~pp_sep: pp_print_cut (fun ppf -> fprintf ppf "- @[%a@]" (Pretty.print_pattern 0))) pats
 
   exception E of t
 
   let unbound_variable env index = raise (E (UnboundVariable (env, index)))
   let apply_non_clo e = raise (E (ApplyNonClo e))
   let infinite_recursion x = raise (E (InfiniteRecursion x))
+  let pattern_matching_failed e pats = raise (E (PatternMatchingFailed (e, pats)))
 end
 
 let debug_print (s : State.t) = Format.fprintf s.debug_ppf
@@ -56,7 +62,7 @@ let rec match_pattern (env : env) : tm * pattern -> env option = function
         | None -> None
       end (Some env)
     end
-  | _ -> failwith "pattern matching failed"
+  | _ -> None
 
 let rec eval (s : State.t) (env : env) : tm -> tm = function
   | Num n -> Num n
@@ -73,7 +79,7 @@ let rec eval (s : State.t) (env : env) : tm -> tm = function
     | Clo (clo_env, e) ->
       let e' = eval s env e2 in
       let env' = Env.extend e' clo_env in
-      debug_print s "entering closure with now-full env %a@," Pretty.print_env env';
+      debug_print s "@[<v 2>entering closure with now-full env@ %a@]@," Pretty.print_env env';
       eval s env' e
     | e -> RuntimeError.apply_non_clo e
   end
@@ -86,15 +92,18 @@ let rec eval (s : State.t) (env : env) : tm -> tm = function
   | Clo (env, e) -> Clo (env, e)
   | Const (ctor_name, spine) -> Const (ctor_name, List.map (eval s env) spine)
 
-and eval_match (s : State.t) (env : env) (scrutinee : tm) : case list -> tm = function
-  | [] -> failwith "pattern matching failed"
-  | Case (pattern, body) :: cases -> match match_pattern env (scrutinee, pattern) with
-    | Some env' ->
-      debug_print s "matched case for pattern @[%a@], new env is @[%a@]@,"
-       (Pretty.print_pattern 0) pattern
-       (Pretty.print_env) env';
-      eval s env' body
-    | None -> eval_match s env scrutinee cases
+and eval_match (s : State.t) (env : env) (scrutinee : tm) (cases : case list) : tm =
+  let rec go = function
+    | [] -> RuntimeError.pattern_matching_failed scrutinee (List.map case_pattern cases)
+    | Case (pattern, body) :: cases -> match match_pattern env (scrutinee, pattern) with
+      | Some env' ->
+        debug_print s "@[<v 2>@[<hv 2>matched case for pattern@ %a@]@,@[<hv 2>new env is@ %a@]@]@,"
+        (Pretty.print_pattern 0) pattern
+        (Pretty.print_env) env';
+        eval s env' body
+      | None -> go cases
+  in
+  go cases
 
 let eval_decl (s : State.t) (d : decl) : State.t = match d with
   | TpDecl d -> List.fold_right
@@ -106,6 +115,7 @@ let eval_decl (s : State.t) (d : decl) : State.t = match d with
     let s = s |> State.modify_signature
       (if recursive then Signature.extend_tms name d else fun x -> x)
     in
+    debug_print s "Evaluating definition for %s@," name;
     let body = eval s Env.empty body in
     begin let open Format in
       fprintf std_formatter "- @[<hv 2>val %s =@, %a@]%a"
@@ -115,13 +125,11 @@ let eval_decl (s : State.t) (d : decl) : State.t = match d with
     end;
     s |> State.modify_signature (Signature.extend_tms name { d with body = Some body })
 
-let eval_program initial_state program : State.t option =
+let eval_program initial_state program : (RuntimeError.t, State.t) Result.t =
   let open RuntimeError in
   debug_print initial_state "@[<v>";
-  let result = try Some (List.fold_left eval_decl initial_state program) with
-  | E e ->
-    Format.(fprintf err_formatter) "%a" print_runtime_error e;
-    None
+  let result = try Result.ok (List.fold_left eval_decl initial_state program) with
+    | E e -> Result.error e
   in
   debug_print initial_state "@]";
   result

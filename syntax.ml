@@ -194,6 +194,9 @@ module Sugar = struct
   let n n = Num n
   let r name = Ref name
   let lam e = Fun e
+  let rec lams n e = match n with
+    | 0 -> e
+    | n -> Fun (lams (n-1) e)
   let case e (cases : (pattern * tm) list) = Match (e, List.map (fun (p, e) -> Case (p, e)) cases)
   let def e1 e2 = Let (e1, e2)
   (* let fix f = Rec f *)
@@ -220,6 +223,7 @@ module Sugar = struct
 
   let ty_list tp = tr1 "List" tp
   let ty_nat = tr0 "Nat"
+  let ty_tree tp = tr1 "Tree" tp
 
   let zero = const "Z" []
   let succ n = const "S" [n]
@@ -235,6 +239,9 @@ module Sugar = struct
 
   (* Transform an OCaml list of terms into a Eval list *)
   let list es = List.fold_right cons es nil
+
+  let empty_tree = const "Empty" []
+  let node e l = const "Node" [e; list l]
 
   (* Transform a positive OCaml integer into an Eval Nat. *)
   let rec nat = function

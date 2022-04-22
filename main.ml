@@ -29,6 +29,39 @@ let program = [
     }]
   };
   TmDecl {
+    name = "plus";
+    typ = Sugar.(mono @@ arrows [ty_nat; ty_nat] ty_nat);
+    recursive = true;
+    body = Some begin let open Sugar in
+      lams 2 begin
+        case (v 0) [
+          pzero --> v 1;
+          psucc pv --> succ (apps (r "plus") [v 2; v 0]);
+        ]
+      end
+    end;
+  };
+  TmDecl {
+    name = "fold_list";
+    typ = Sugar.(["a"; "b"], arrows [arrows [TVar "a"; TVar "b"] (TVar "b"); TVar "b"; ty_list (TVar "a")] (TVar "b"));
+    recursive = true;
+    body = Some begin let open Sugar in
+      lams 3 begin (* v 0 : List a, v 1 : b, v 2 : a -> b -> b *)
+        case (v 0) [
+          pnil --> v 1;
+          pcons pv pv --> (* v 0 : List a, v 1 : a, v 2 onwards above *)
+            apps (v 4) [v 1; apps (r "fold_list") [v 4; v 3; v 0]]
+        ]
+      end
+    end
+  };
+  TmDecl {
+    name = "sum_list";
+    typ = Sugar.(mono @@ arrows [ty_list ty_nat] ty_nat);
+    recursive = false;
+    body = Some Sugar.(apps (r "fold_list") [r "plus"; zero])
+  };
+  TmDecl {
     name = "double";
     typ = Sugar.(mono @@ Arrow (ty_nat, ty_nat));
     recursive = true;
@@ -95,6 +128,12 @@ let program = [
     body = Some Sugar.(list [nat 0; nat 1; nat 2; nat 3; nat 4]);
   };
   TmDecl {
+    name = "sample_list_sum";
+    typ = Sugar.(mono @@ ty_nat);
+    recursive = false;
+    body = Some Sugar.(r "sum_list" @@@ r "sample_list");
+  };
+  TmDecl {
     name = "sample_list_length";
     typ = mono @@ Sugar.ty_nat;
     recursive = false;
@@ -141,6 +180,69 @@ let program = [
     typ = mono @@ Sugar.(ty_list ty_nat);
     recursive = false;
     body = Some Sugar.(apps (r "map") [r "length"; r "list_of_lists"]);
+  };
+  TpDecl {
+    name = "Tree";
+    tvar_binders = ["a"];
+    constructors = [{
+      owner_name = "Tree";
+      name = "Empty";
+      fields = [];
+    }; {
+      owner_name = "Tree";
+      name = "Node";
+      fields = Sugar.([TVar "a"; ty_list (ty_tree (TVar "a"))]);
+    }]
+  };
+  TmDecl {
+    name = "fold_tree";
+    typ = Sugar.(
+      ["a"; "b"],
+      arrows [arrows [TVar "a"; ty_list (TVar "b")] (TVar "b"); TVar "b"; ty_tree (TVar "a")] (TVar "b")
+    );
+    recursive = true;
+    body = Some begin let open Sugar in
+      lams 3 begin
+        case (v 0) (* v 0 : Tree a, v 1 : b, v 2: a -> List b -> b *) [
+          pconst "Empty" [] --> v 1;
+          pconst "Node" [pv; pv] -->
+            (* v 0 : List (Tree a), v 1 : a, v 2 : Tree a; v 3 : b, v 4 : a -> List b -> b *)
+            apps (v 4) [v 1; apps (r "map") [apps (r "fold_tree") [v 3; v 4]; v 0]];
+        ]
+      end
+    end;
+  };
+  TmDecl {
+    name = "tree_size";
+    typ = Sugar.(["a"], arrows [ty_tree (TVar "a")] ty_nat);
+    recursive = false;
+    body = Some begin let open Sugar in
+      apps (r "fold_tree") [
+        lams 2 begin (* v 0 : List Nat, v 1 : a *)
+          succ (r "sum_list" @@@ v 0)
+        end;
+        zero;
+      ]
+    end;
+  };
+  TmDecl {
+    name = "sample_tree";
+    typ = Sugar.(mono @@ ty_tree ty_nat);
+    recursive = false;
+    body = Some begin let open Sugar in
+      node zero [
+        node zero [empty_tree; node zero []; node zero []];
+        node zero [node zero [node zero []]];
+        empty_tree;
+        node zero [node zero []; node zero [node zero []]; node zero [node zero [node zero []]]];
+      ];
+    end
+  };
+  TmDecl {
+    name = "sample_tree_size";
+    typ = mono @@ Sugar.ty_nat;
+    recursive = false;
+    body = Some Sugar.(r "tree_size" @@@ r "sample_tree");
   };
 ]
 

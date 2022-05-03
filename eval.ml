@@ -19,15 +19,17 @@ end
 module RuntimeError = struct
   type t =
     | UnboundVariable of env * index
-    | ApplyNonClo of tm
+    | ApplyNonClo of tm * tm
     | InfiniteRecursion of tm_name
     | PatternMatchingFailed of tm * pattern list
 
   let print ppf : t -> unit = let open Format in function
     | UnboundVariable (env, i) ->
       fprintf ppf "@[<v 2>Unbound variable %d in environment@ %a@]" i Pretty.print_env env
-    | ApplyNonClo e ->
-      fprintf ppf "@[<v 2>Cannot apply non-closure@ %a@]" (Pretty.print_tm 0) e
+    | ApplyNonClo (e, e') ->
+      fprintf ppf "@[<v>@[<v 2>Cannot apply non-closure@ %a@]@,@[<v 2>to argument@ %a@]@]"
+        (Pretty.print_tm 0) e
+        (Pretty.print_tm 0) e'
     | InfiniteRecursion x ->
       fprintf ppf "Infinite recursion detected in definition for %s" x
     | PatternMatchingFailed (e, pats) ->
@@ -38,7 +40,7 @@ module RuntimeError = struct
   exception E of t
 
   let unbound_variable env index = raise (E (UnboundVariable (env, index)))
-  let apply_non_clo e = raise (E (ApplyNonClo e))
+  let apply_non_clo e e' = raise (E (ApplyNonClo (e, e')))
   let infinite_recursion x = raise (E (InfiniteRecursion x))
   let pattern_matching_failed e pats = raise (E (PatternMatchingFailed (e, pats)))
 end
@@ -50,11 +52,12 @@ let debug_print (s : State.t) = Format.fprintf s.debug_ppf
  *)
 let rec match_pattern (env : env) : tm * pattern -> env option = function
   | Num n1, NumPattern n2 -> if n1 = n2 then Some env else None
-  | e, VariablePattern -> Some (Env.extend e env) 
+  | e, VariablePattern -> Some (Env.extend e env)
   | _, WildcardPattern -> Some env
   | Const (ctor_name, spine), ConstPattern (pat_ctor_name, pat_spine) -> begin match () with
     | _ when not (ctor_name = pat_ctor_name) -> None
-    | _ when not (List.length spine = List.length pat_spine) -> failwith "constructor spine mismatch"
+    | _ when not (List.length spine = List.length pat_spine) ->
+      raise @@ Util.Invariant "typechecking invariant: pattern spine lengths match"
     | _ ->
       List.combine spine pat_spine |> List.fold_left begin fun env (p, e) ->
         match env with
@@ -74,15 +77,28 @@ let rec eval (s : State.t) (env : env) : tm -> tm = function
     | { body = Some body; _ } -> body
     | _ -> RuntimeError.infinite_recursion v
   end
-  | Fun e -> Clo (env, e)
-  | App (e1, e2) -> begin match eval s env e1 with
-    | Clo (clo_env, e) ->
-      let e' = eval s env e2 in
-      let env' = Env.extend e' clo_env in
-      debug_print s "@[<v 2>entering closure with now-full env@ %a@]@," Pretty.print_env env';
-      eval s env' e
-    | e -> RuntimeError.apply_non_clo e
-  end
+  | Fun e ->
+    debug_print s "@[<hv 2>Construct closure@ %a@]@," (Pretty.print_tm 0) (Clo (env, e));
+    Clo (env, e)
+  | App (e1, e2) as e ->
+    debug_print s "@[<hv 2>Evaluate application@ `%a'@ left side.@ " (Pretty.print_tm 0) e;
+    let e1' = eval s env e1 in
+    debug_print s "--> %a@," (Pretty.print_tm 0) e1';
+    debug_print s "@]@,";
+    debug_print s "@[<hv 2>Evaluate application@ `%a'@ right side.@ " (Pretty.print_tm 0) e;
+    let e2' = eval s env e2 in
+    let e' = App (e1', e2') in
+    debug_print s "--> %a@," (Pretty.print_tm 0) e2';
+    debug_print s "@]@,@[<hv>Perform application:@ `%a'@]@," (Pretty.print_tm 0) e';
+    begin match eval s env e1 with
+      | Clo (clo_env, e) ->
+        let env' = Env.extend e2' clo_env in
+        debug_print s "@[<v>@[<v 2>Enter closure@ %a@]@,@[<v 2>with now-full env@ %a@]@]@,"
+          (Pretty.print_tm 0) e
+          Pretty.print_env env';
+        eval s env' e
+      | e -> RuntimeError.apply_non_clo e1' e2'
+    end
   | Let (e1, e2) ->
     let x = eval s env e1 in
     eval s (Env.extend x env) e2
@@ -97,9 +113,10 @@ and eval_match (s : State.t) (env : env) (scrutinee : tm) (cases : case list) : 
     | [] -> RuntimeError.pattern_matching_failed scrutinee (List.map case_pattern cases)
     | Case (pattern, body) :: cases -> match match_pattern env (scrutinee, pattern) with
       | Some env' ->
-        debug_print s "@[<v 2>@[<hv 2>matched case for pattern@ %a@]@,@[<hv 2>new env is@ %a@]@]@,"
+        debug_print s "@[<v 2>@[<hv 2>matched case for pattern@ %a@]@,@[<hv 2>new env is@ %a@]@,@[<hv 2>to evaluate body@ %a@]@]@,"
         (Pretty.print_pattern 0) pattern
-        (Pretty.print_env) env';
+        (Pretty.print_env) env'
+        (Pretty.print_tm 0) body;
         eval s env' body
       | None -> go cases
   in

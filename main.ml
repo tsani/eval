@@ -56,6 +56,21 @@ let program = [
     end
   };
   TmDecl {
+    name = "map";
+    typ = Sugar.(["a"; "b"], arrows [arrow (TVar "a") (TVar "b"); ty_list (TVar "a")] @@ ty_list (TVar "b"));
+    recursive = true;
+    body = Some begin let open Sugar in
+      lam begin
+        lam begin
+          case (v 0) [
+            pnil --> nil;
+            pcons pv pv --> cons (v 3 @@@ v 1) (apps (r "map") [v 3; v 0]);
+          ]
+        end
+      end
+    end;
+  };
+  TmDecl {
     name = "sum_list";
     typ = Sugar.(mono @@ arrows [ty_list ty_nat] ty_nat);
     recursive = false;
@@ -161,21 +176,6 @@ let program = [
     body = Some Sugar.(apps (r "replicate") [r "sample_list"; nat 5])
   };
   TmDecl {
-    name = "map";
-    typ = Sugar.(["a"; "b"], arrows [arrow (TVar "a") (TVar "b"); ty_list (TVar "a")] @@ ty_list (TVar "b"));
-    recursive = true;
-    body = Some begin let open Sugar in
-      lam begin
-        lam begin
-          case (v 0) [
-            pnil --> nil;
-            pcons pv pv --> cons (v 3 @@@ v 1) (apps (r "map") [v 3; v 0]);
-          ]
-        end
-      end
-    end;
-  };
-  TmDecl {
     name = "list_of_nats";
     typ = mono @@ Sugar.(ty_list ty_nat);
     recursive = false;
@@ -198,6 +198,7 @@ let program = [
     name = "fold_tree";
     typ = Sugar.(
       ["a"; "b"],
+      (* (a -> List b -> b) -> b -> Tree a -> b *)
       arrows [arrows [TVar "a"; ty_list (TVar "b")] (TVar "b"); TVar "b"; ty_tree (TVar "a")] (TVar "b")
     );
     recursive = true;
@@ -207,7 +208,7 @@ let program = [
           pconst "Empty" [] --> v 1;
           pconst "Node" [pv; pv] -->
             (* v 0 : List (Tree a), v 1 : a, v 2 : Tree a; v 3 : b, v 4 : a -> List b -> b *)
-            apps (v 4) [v 1; apps (r "map") [apps (r "fold_tree") [v 3; v 4]; v 0]];
+            apps (v 4) [v 1; apps (r "map") [apps (r "fold_tree") [v 4; v 3]; v 0]];
         ]
       end
     end;
@@ -231,10 +232,16 @@ let program = [
     recursive = false;
     body = Some begin let open Sugar in
       node zero [
-        node zero [empty_tree; node zero []; node zero []];
-        node zero [node zero [node zero []]];
+        node (nat 1) [empty_tree; node (nat 2) []; node (nat 3) []];
+        (*
+        node (nat 4) [node (nat 5) [node (nat 6) []]];
         empty_tree;
-        node zero [node zero []; node zero [node zero []]; node zero [node zero [node zero []]]];
+        node (nat 7) [
+          node (nat 8) [];
+          node (nat 9) [node (nat 10) []];
+          node (nat 11) [node (nat 12) [node (nat 13) []]];
+        ];
+        *)
       ];
     end
   };

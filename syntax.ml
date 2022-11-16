@@ -27,6 +27,10 @@ module Ctx = struct
   type t = tp_sc list
   let extend ctx tpsc = tpsc :: ctx
   let empty = []
+
+  (* Associates each entry in the context with the index of the variable that refers to that entry. *)
+  let enumerate (ctx : t) : (index * tp_sc) list =
+    List.fold_right (fun tpsc ctx -> fun n -> (n, tpsc) :: ctx (n + 1)) ctx (fun _ -> []) 0
 end
 
 type tm
@@ -210,16 +214,21 @@ module Sugar = struct
   let tr c spine = Named (c, spine)
   let tr0 c = Named (c, [])
   let tr1 c tp = Named (c, [tp])
+
   let arrow t1 t2 = Arrow (t1, t2)
+
+  (* Constructs a nested arrow type for a function of multiple parameters.
+   *
+   * arrows [] Tr = Tr
+   * arrows (T :: Ts) Tr = T -> arrows Ts Tr
+   *)
+  let arrows arg_tps result_tp = List.fold_right arrow arg_tps result_tp
 
   let ignored = WildcardPattern
   let pconst name pats = ConstPattern (name, pats)
   let pv = VariablePattern
 
   (* type-specific sugar *)
-
-  (* Constructs a nested arrow type for a function of multiple parameters. *)
-  let arrows arg_tps result_tp = List.fold_right arrow arg_tps result_tp
 
   let ty_list tp = tr1 "List" tp
   let ty_nat = tr0 "Nat"
@@ -248,6 +257,29 @@ module Sugar = struct
     | 0 -> const "Z" []
     | n -> const "S" [nat @@ n - 1]
 
+  (* Decomposes a term consisting of a chain of Cons and Nil into a list of terms. *)
+  let rec decompose_list (e : tm) : tm list option = match e with
+    | Const (c, _) when c = "Nil" -> Some []
+    | Const (c, spine) when c = "Cons" -> begin match spine with
+      | [head; tail] -> begin match decompose_list tail with
+        | Some tail -> Some (head :: tail)
+        | None -> None
+      end
+      | _ -> None
+    end
+    | _ -> None
+
+  (* Decomposes a term consisting of a chain of S and Z into a nonnegative integer. *)
+  let rec decompose_nat (e : tm) : int option = match e with
+    | Const (c, _) when c = "Z" -> Some 0
+    | Const (c, spine) when c = "S" -> begin match spine with
+      | [e'] -> begin match decompose_nat e' with
+        | Some n -> Some (n + 1)
+        | _ -> None
+      end
+      | _ -> None
+    end
+    | _ -> None
 end
 
 (* Looks up a variable in a context or an environment. (They have the same structure.) *)

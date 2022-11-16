@@ -85,12 +85,12 @@ let rec eval (s : State.t) (env : env) : tm -> tm = function
     let e1' = eval s env e1 in
     debug_print s "--> %a@," (Pretty.print_tm 0) e1';
     debug_print s "@]@,";
-    debug_print s "@[<hv 2>Evaluate application@ `%a'@ right side.@ " (Pretty.print_tm 0) e;
+    debug_print s "@[<hv 2>Evaluate application@ `%a'@ right side.@ " (Pretty.print_tm 0) (App (e1', e2));
     let e2' = eval s env e2 in
     let e' = App (e1', e2') in
     debug_print s "--> %a@," (Pretty.print_tm 0) e2';
     debug_print s "@]@,@[<hv>Perform application:@ `%a'@]@," (Pretty.print_tm 0) e';
-    begin match eval s env e1 with
+    begin match e1' with
       | Clo (clo_env, e) ->
         let env' = Env.extend e2' clo_env in
         debug_print s "@[<v>@[<v 2>Enter closure@ %a@]@,@[<v 2>with now-full env@ %a@]@]@,"
@@ -135,7 +135,7 @@ let eval_decl (s : State.t) (d : decl) : State.t = match d with
     debug_print s "Evaluating definition for %s@," name;
     let body = eval s Env.empty body in
     begin let open Format in
-      fprintf std_formatter "- @[<hv 2>val %s =@, %a@]%a"
+      fprintf std_formatter "- @[<hv 2>val %s =@ %a@]%a"
         name
         (Pretty.print_tm 0) body
         pp_print_newline ()

@@ -144,6 +144,8 @@ let unify (k : unify_kind) : 'a Unify.result -> 'a result =
   in
   Result.map_error (fun err -> TypeError.report @@ f err)
 
+let dprintf env = Format.fprintf env.ppf
+
 let rec infer_tm (env : infer_env) (s : infer_state) : tm -> (infer_state * tp) result = function
   | Num _ -> Result.ok (s, Int)
   | Var i -> begin match lookup_var env.ctx i with
@@ -157,7 +159,7 @@ let rec infer_tm (env : infer_env) (s : infer_state) : tm -> (infer_state * tp) 
   | Const (c, spine) ->
     let s, ctor_tp = instantiate_ctor_type env s c in
     Result.bind (infer_ctor_from_spine env s spine) @@ fun (s, inferred_ctor_tp, result_tp) ->
-    Format.fprintf env.ppf "Unifying constructor type@.";
+    dprintf env "Unifying constructor type@,";
     let ctor_tp' = TMVar.apply_sub s.tmvars ctor_tp in
     let inferred_ctor_tp' = TMVar.apply_sub s.tmvars inferred_ctor_tp in
     Result.bind (unify (`ctor_spine ((c, ctor_tp'), (spine, inferred_ctor_tp'))) (Unify.types s.tmvars (ctor_tp, inferred_ctor_tp))) @@ fun tmvars ->
@@ -166,15 +168,19 @@ let rec infer_tm (env : infer_env) (s : infer_state) : tm -> (infer_state * tp) 
     let s, x = fresh_tmvar s "a" in
     let tp_a = TMVar x in
     let env = extend_ctx env @@ mono tp_a in
-    Format.fprintf env.ppf "Entering function.@.";
+    dprintf env "@[<hv 2>Entering function.@ ";
     Result.bind (push e @@ infer_tm env s e) @@ fun (s, tp_b) ->
-    Result.ok (s, Arrow (tp_a, tp_b))
+    let arr = Arrow (tp_a, tp_b) in
+    dprintf env "@]@[<v 2>Inferred function type@ %a@]@," (Pretty.print_tp 0) (TMVar.apply_sub s.tmvars arr);
+    Result.ok (s, arr)
   | App (e1, e2) ->
     Result.bind (push e1 @@ infer_tm env s e1) @@ fun (s, f_tp) ->
     Result.bind (push e2 @@ infer_tm env s e2) @@ fun (s, arg_tp) ->
     let s, x = fresh_tmvar s "a" in
     let inferred_f_tp = Arrow (arg_tp, TMVar x) in
-    Format.fprintf env.ppf "Unifying application with function type.@.";
+    dprintf env "@[<v>@[<v 2>Unify inferred function type@ %a@]@ @[<v 2>with expected function type@ %a@]@]@,"
+      (Pretty.print_tp 0) (TMVar.apply_sub s.tmvars inferred_f_tp)
+      (Pretty.print_tp 0) (TMVar.apply_sub s.tmvars f_tp);
     Result.bind (unify (`app e1) (Unify.types s.tmvars (f_tp, inferred_f_tp))) @@ fun tmvars ->
     Result.ok ({ s with tmvars }, TMVar x)
   | Match (e1, cases) ->
@@ -184,22 +190,25 @@ let rec infer_tm (env : infer_env) (s : infer_state) : tm -> (infer_state * tp) 
     let rec go s = function
       | [] -> Result.ok s
       | Case (pat, body) :: cases ->
-        Format.fprintf env.ppf "Inferring pattern type.@.";
+        dprintf env "@[<hv 2>Infer type of pattern@ %a@]@," (Pretty.print_pattern 0) pat;
         bind (infer_pat env s pat) @@ fun (env', s, pat_tp) ->
         let scru_tp' = TMVar.apply_sub s.tmvars scru_tp in
-        bind (unify (`scru_pat ((e1, scru_tp'), (pat, pat_tp))) (Unify.types s.tmvars (scru_tp, pat_tp))) @@ fun tmvars ->
-        Format.fprintf env.ppf "Inferring body type.@.";
+        let u_pat = Unify.types s.tmvars (scru_tp, pat_tp) in
+        bind (unify (`scru_pat ((e1, scru_tp'), (pat, pat_tp))) u_pat) @@ fun tmvars ->
+        dprintf env "Inferring body type.@,";
         bind (infer_tm env' { s with tmvars } body) @@ fun (s, body_tp) ->
-        Format.fprintf env.ppf "Unifying body type.@.";
         let body_tp' = TMVar.apply_sub s.tmvars body_tp in
         let other_body_tp = TMVar.apply_sub s.tmvars (TMVar x) in
-        bind (unify (`case_body (body, body_tp', other_body_tp)) (Unify.types s.tmvars (TMVar x, body_tp))) @@ fun tmvars ->
-        Format.fprintf env.ppf "On to the next case...@.";
+        dprintf env "@[<hv 2>@[<hv 2>Unifying body types@ %a@]@ @[<hv 2>and@ %a@]@]@,"
+          (Pretty.print_tp 0) body_tp'
+          (Pretty.print_tp 0) other_body_tp;
+        let u_body = Unify.types s.tmvars (TMVar x, body_tp) in
+        bind (unify (`case_body (body, body_tp', other_body_tp)) u_body) @@ fun tmvars ->
         go { s with tmvars } cases
     in
-    Format.fprintf env.ppf "Processing match cases@.";
+    dprintf env "Processing match cases@,";
     bind (go s cases) @@ fun s ->
-    Format.fprintf env.ppf "Done processing cases.@.";
+    dprintf env "Done processing cases.@,";
     Result.ok (s, TMVar x)
   | Let (e1, e2) ->
     Result.bind (push e1 @@ infer_tm env s e1) @@ fun (s, scru_tp) ->
@@ -212,10 +221,10 @@ let rec infer_tm (env : infer_env) (s : infer_state) : tm -> (infer_state * tp) 
     push e2 @@ infer_tm env s e2
 
 (* Infers the type of a function this spine would be applicable to.
- * infer_ctor_from_spine E S sp = (S', T_f, T_return)
- * where T_f = T1 -> ... -> Tn -> T_return
- * and each Ti is inferred from the corresponding sp[i]
- * and T_return is a fresh TMVar
+ * infer_ctor_from_spine E S sp = (S', T_f, T_r)
+ * where T_f = T_1 -> ... -> T_n -> T_r
+ * and each T_i is inferred from the corresponding sp_i
+ * and T_r is a fresh TMVar
  *)
 and infer_ctor_from_spine (env : infer_env) (s : infer_state) : spine -> (infer_state * tp * tp) result =
   function
@@ -245,7 +254,8 @@ and infer_pat (env : infer_env) (s : infer_state) : pattern -> (infer_env * infe
     Result.bind (infer_ctor_from_pat_spine env s pat_spine) @@ fun (env, s, inferred_ctor_tp, result_tp) ->
     let ctor_tp' = TMVar.apply_sub s.tmvars ctor_tp in
     let inferred_ctor_tp' = TMVar.apply_sub s.tmvars inferred_ctor_tp in
-    Result.bind (unify (`ctor_pat_spine ((c, ctor_tp'), (pat_spine, inferred_ctor_tp'))) (Unify.types s.tmvars (ctor_tp, inferred_ctor_tp))) @@ fun tmvars ->
+    let u = Unify.types s.tmvars (ctor_tp, inferred_ctor_tp) in
+    Result.bind (unify (`ctor_pat_spine ((c, ctor_tp'), (pat_spine, inferred_ctor_tp'))) u) @@ fun tmvars ->
     Result.ok (env, { s with tmvars }, result_tp)
 
 (* Given a spine t1, ..., tn, constructs the type of a constructor that would accept this spine.
@@ -268,31 +278,48 @@ let make_env ppf (sg : Signature.t) : infer_env =
   { sg; ctx = Ctx.empty; ppf }
 
 let check_decl ppf (sg : Signature.t) : decl -> Signature.t result = function
-  | TpDecl d -> Result.ok @@ Signature.declare_tp sg d
+  | TpDecl d ->
+    Format.fprintf ppf "@[Define type %s@]@," d.name;
+    Result.ok @@ Signature.declare_tp sg d
   | TmDecl ({ recursive; typ; name; body } as d) ->
-    let tmvars, x = TMVar.fresh TMVar.empty_sub "a" in
-    let sg = Signature.declare_tm sg { d with typ = mono @@ TMVar x } in
-    match body with
-    | None -> Result.ok @@ sg
-    | Some body ->
-      let open Result.Syntax in
-      Format.fprintf ppf "Inferring body of declaration for %s@." name;
-      infer_tm (make_env ppf sg) { tmvars } body $ fun (s, tp) ->
-      (* Unify the user-supplied type as expected type *)
-      let s, user_tp = instantiate s typ in
-      Format.fprintf ppf "Unifying user type @[%a@] with inferred type @[%a@]@."
-       (Pretty.print_tp 0) user_tp
-       (Pretty.print_tp 0) tp;
-      unify (`decl (name, user_tp, tp)) (Unify.types s.tmvars (user_tp, tp)) $ fun tmvars ->
-      (* by unification, [tmvars]typ = [tmvars]tp *)
-      Format.fprintf ppf "@[<v>@[<v 2>Applying substitution:@,%a@]@,@[<v 2>to user type:@,%a@]@."
-        TMVar.print_sub tmvars
-        (Pretty.print_tp 0) user_tp;
-      let tp = TMVar.apply_sub tmvars user_tp in
-      Format.fprintf ppf "Generalizing.@.";
-      let tpsc = generalize [] tp in
-      Format.fprintf ppf "Done.@.";
-      Result.ok @@ Signature.declare_tm sg { d with typ = tpsc }
+    Format.fprintf ppf "@[<v 2>Typechecking declaration for %s@," name;
+    (* associate a fresh type variable to the definition, so that when we look
+       up the type of the function for recursion, we end up unifying
+       appropriately to figure out the type of the function. *)
+    let tmvars, sg =
+      if recursive then
+        let tmvars, x = TMVar.fresh TMVar.empty_sub "a" in
+        (tmvars, Signature.declare_tm sg { d with typ = mono @@ TMVar x })
+      else
+        (TMVar.empty_sub, sg)
+    in
+    let sg' = match body with
+      | None -> Result.ok @@ sg
+      | Some body ->
+        let open Result.Syntax in
+        Format.fprintf ppf "Inferring body of declaration for %s@," name;
+        infer_tm (make_env ppf sg) { tmvars } body $ fun (s, tp) ->
+        (* Unify the user-supplied type as expected type *)
+        let s, user_tp = instantiate s typ in
+        Format.fprintf ppf "@[<hv 2>@[<hv 2>Unifying user type@ %a@]@ @[<hv 2>with inferred type@ %a@]@]@,"
+        (Pretty.print_tp 0) user_tp
+        (Pretty.print_tp 0) (TMVar.apply_sub s.tmvars tp);
+        unify (`decl (name, user_tp, tp)) (Unify.types s.tmvars (user_tp, tp)) $ fun tmvars ->
+        (* by unification, [tmvars]typ = [tmvars]tp *)
+        Format.fprintf ppf "@[<v>@[<v 2>Applying substitution:@,%a@]@,@[<v 2>to user type:@,%a@]@]@,"
+          TMVar.print_sub tmvars
+          (Pretty.print_tp 0) user_tp;
+        let tp = TMVar.apply_sub tmvars user_tp in
+        Format.fprintf ppf "Generalizing...@,";
+        let tpsc = generalize [] tp in
+        Format.fprintf ppf "@[<hv 2>Generalized type is@ %a@]@," (Pretty.print_tp_sc 0) tpsc;
+        Result.ok @@ Signature.declare_tm sg { d with typ = tpsc }
+    in
+    Format.fprintf ppf "@]@,";
+    sg'
 
 let check_program ppf (sg : Signature.t) : program -> Signature.t result =
-  List.fold_left (fun sg d -> Result.bind sg @@ fun sg -> check_decl ppf sg d) (Result.ok sg)
+  Format.fprintf ppf "@[<v>";
+  let x = List.fold_left (fun sg d -> Result.bind sg @@ fun sg -> check_decl ppf sg d) (Result.ok sg) in
+  Format.fprintf ppf "@]";
+  x

@@ -67,7 +67,9 @@ let rec apply_sub (tmvars : sub) : tp -> tp = function
   | Arrow (t1, t2) -> Arrow (apply_sub tmvars t1, apply_sub tmvars t2)
   | TVar x -> TVar x
   | TMVar x -> begin match lookup tmvars x with
-    | `inst t -> Format.(fprintf err_formatter "going under var %s@." x); apply_sub tmvars t
+    | `inst t ->
+       (* Format.(fprintf err_formatter "going under var %s@," x); *)
+       apply_sub tmvars t
     | `uninst -> TMVar x
     | `not_found -> raise @@ Util.Invariant "no free TMVars allowed"
   end

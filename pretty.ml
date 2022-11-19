@@ -1,11 +1,13 @@
 open Format
 open Syntax
+open Term
+open Type
 
 let lparen ppf cond = if cond then fprintf ppf "("
 let rparen ppf cond = if cond then fprintf ppf ")"
 let comma_space ppf () = fprintf ppf ",@ "
 
-let rec print_tp lvl (ppf : formatter) : tp -> unit = function
+let rec print_tp lvl (ppf : formatter) : Type.t -> unit = function
   | Int -> fprintf ppf "int"
   | Arrow (t1, t2) ->
     fprintf ppf "%a@[%a@] -> @[%a@]%a"
@@ -23,7 +25,7 @@ let rec print_tp lvl (ppf : formatter) : tp -> unit = function
   | TVar x -> fprintf ppf "%s" x
   | TMVar x -> fprintf ppf "%s" x
 
-let print_tp_sc lvl (ppf : formatter) (binders, tp : tp_sc) : unit =
+let print_tp_sc lvl (ppf : formatter) (binders, tp : Type.sc) : unit =
   fprintf ppf "%a@[<hv 2>%a@,%a@]%a"
     lparen (lvl > 0)
     (pp_print_list @@ fun ppf x -> fprintf ppf "%s. " x) binders
@@ -32,73 +34,67 @@ let print_tp_sc lvl (ppf : formatter) (binders, tp : tp_sc) : unit =
 
 let rec print_ctx (ppf : formatter) (ctx : Ctx.t) : unit =
   pp_print_list ~pp_sep: comma_space begin fun ppf (i, t) ->
-    fprintf ppf "@[<hv 2>v %d :@ %a@]" i (print_tp_sc 0) t
+    fprintf ppf "@[<hv 2>v %d :@ %a@]" i begin fun ppf (x, tpsc) ->
+      fprintf ppf "%s :@ %a" x (print_tp_sc 0) tpsc
+    end t
   end ppf @@ Ctx.enumerate ctx
 
-let rec print_tm lvl (ppf : formatter) : tm -> unit = function
+let print_rec_flag ppf = function
+  | Rec -> fprintf ppf "rec "
+  | NonRec -> ()
+
+let rec print_tm lvl scope (ppf : formatter) : Term.t -> unit = function
   | Num n -> fprintf ppf "%s" (string_of_int n)
   | Var i -> fprintf ppf "!%s" (string_of_int i)
   | Ref f -> fprintf ppf "%s" f
-  | Fun e ->
-    fprintf ppf "%a@[<hv 2>fun ! -> @,%a@]%a"
+  | Fun (x, e) ->
+    fprintf ppf "%a@[<hv 2>fun %s -> @,%a@]%a"
       lparen (lvl > 0)
-      (print_tm 0) e
+      x
+      (print_tm 0 (Scope.extend scope x)) e
       rparen (lvl > 0)
   | App (e1, e2) (* prec 9 *) ->
     fprintf ppf "%a@[<hv 2>%a @,%a@]%a"
       lparen (lvl > 9)
-      (print_tm 9) e1
-      (print_tm 10) e2
+      (print_tm 9 scope) e1
+      (print_tm 10 scope) e2
       rparen (lvl > 9)
-  | Let (e1, e2) ->
-    fprintf ppf "%a@[<hv>@[<hv>@[<hv 2>let ! =@ @[%a@]@]@ in@]@ @[%a@]@]%a"
+  | Let (rec_flag, x, e1, e2) ->
+    fprintf ppf "%a@[<hv>@[<hv>@[<hv 2>let %a%s =@ @[%a@]@]@ in@]@ @[%a@]@]%a"
       lparen (lvl > 8)
-      (print_tm 0) e1
-      (print_tm 0) e2
+      print_rec_flag rec_flag
+      x
+      (print_tm 0 @@ Scope.extend_rec rec_flag scope x) e1
+      (print_tm 0 @@ Scope.extend scope x) e2
       rparen (lvl > 8)
   | Match (e, cases) ->
     fprintf ppf "%a@[<v>@[<v 2>match @[%a@] with @,%a@]@,@]end%a"
       lparen (lvl > 8)
-      (print_tm 0) e
-      print_cases cases
+      (print_tm 0 scope) e
+      (print_cases scope) cases
       rparen (lvl > 8)
-  | Const (c, spine) as e -> begin match Sugar.decompose_list e with
-    | Some l -> fprintf ppf "[@[%a@]]" (pp_print_list ~pp_sep: comma_space (print_tm 0)) l
-    | None -> match Sugar.decompose_nat e with
-      | Some n -> fprintf ppf "%dN" n
-      | None -> match spine with
-        | [] -> fprintf ppf "%s" c
-        | spine ->
-          fprintf ppf "%a@[<hv 2>%s@ %a@]%a"
-            lparen (lvl > 8)
-            c
-            (print_spine 10) spine
-            rparen (lvl > 8)
-  end
-  | Clo (env, e) ->
-    fprintf ppf "%a@[<hv 2>@[%a@]@,(%a)@]%a"
-        lparen (lvl > 0)
-        print_env env
-        (print_tm 0) e
-        rparen (lvl > 0)
+  | Const (c, spine) as e -> match spine with
+    | [] -> fprintf ppf "%s" c
+    | spine ->
+      fprintf ppf "%a@[<hv 2>%s@ %a@]%a"
+        lparen (lvl > 8)
+        c
+        (print_spine 10 scope) spine
+        rparen (lvl > 8)
 
-and print_env ppf : tm list -> unit =
-  fprintf ppf "{@[<hv>%a@]}"
-    (pp_print_list ~pp_sep: (fun ppf () -> fprintf ppf ",%a" pp_print_space ()) (print_tm 0))
+and print_spine ?(sep = pp_print_space) lvl scope ppf : Term.t list -> unit =
+  pp_print_list ~pp_sep: sep (print_tm lvl scope) ppf
 
-and print_spine ?(sep = pp_print_space) lvl ppf : tm list -> unit =
-  pp_print_list ~pp_sep: sep (print_tm lvl) ppf
-
-and print_case ppf : case -> unit = function
+and print_case scope ppf : case -> unit = function
   | Case (pat, body) ->
     fprintf ppf "@[<hv 2>%a -> @,%a@]"
       (print_pattern 0) pat
-      (print_tm 0) body
+      (print_tm 0 (Scope.concat (pattern_vars pat) scope)) body
 
-and print_cases ppf : case list -> unit = function
+and print_cases scope ppf : case list -> unit = function
   | [] -> ()
-  | [case] -> fprintf ppf "%a" print_case case
-  | case :: cases -> fprintf ppf "%a@,%a" print_case case print_cases cases
+  | [case] -> fprintf ppf "%a" (print_case scope) case
+  | case :: cases -> fprintf ppf "%a@,%a" (print_case scope) case (print_cases scope) cases
 
 and print_pattern lvl ppf : pattern -> unit = function
   | ConstPattern (ctor_name, []) -> fprintf ppf "%s" ctor_name
@@ -109,15 +105,51 @@ and print_pattern lvl ppf : pattern -> unit = function
       (print_pat_spine 10) pat_spine
       rparen (lvl > 9)
   | NumPattern n -> fprintf ppf "%d" n
-  | VariablePattern -> fprintf ppf "!"
+  | VariablePattern x -> fprintf ppf "%s" x
   | WildcardPattern -> fprintf ppf "_"
 
 and print_pat_spine lvl ppf : pattern list -> unit =
   pp_print_list ~pp_sep: pp_print_space (print_pattern lvl) ppf
 
 (* Pretty-prints a term together with its type. *)
-let print_tm_tp ppf (e, t : tm * tp) : unit =
-  fprintf ppf "%a :%a%a" (print_tm 0) e pp_print_space () (print_tp 0) t
+let print_tm_tp scope ppf (e, t : Term.t * Type.t) : unit =
+  fprintf ppf "%a :%a%a" (print_tm 0 scope) e pp_print_space () (print_tp 0) t
 
 let print_pat_tp ppf (pat, t : pattern * tp) : unit =
   fprintf ppf "%a :%a%a" (print_pattern 0) pat pp_print_space () (print_tp 0) t
+
+let rec print_value lvl ppf (v : Value.t) : unit = let open Value in match v with
+  | Num n -> fprintf ppf "%d" n
+  | Const (ctor_name, val_spine) -> begin match Sugar.decompose_list v with
+    | Some l -> fprintf ppf "[@[%a@]]" (pp_print_list ~pp_sep: comma_space (print_value 0)) l
+    | None -> match Sugar.decompose_nat v with
+      | Some n -> fprintf ppf "%dN" n
+      | None -> match val_spine with
+        | [] -> fprintf ppf "%s" ctor_name
+        | val_spine ->
+          fprintf ppf "%a@[<hv 2>%s@ %a@]%a"
+            lparen (lvl > 8)
+            ctor_name
+            (print_value_spine 10) val_spine
+            rparen (lvl > 8)
+  end
+  | Clo (env, x, e) ->
+    fprintf ppf "%a@[<hv 2>fun %s -> @,%a@]%a"
+      lparen (lvl > 0)
+      x
+      (print_tm 0 (Env.to_scope env)) e
+      rparen (lvl > 0)
+
+and print_value_spine lvl ppf : Value.spine -> unit =
+  pp_print_list ~pp_sep: pp_print_space (print_value lvl) ppf
+
+let rec print_env ppf (env : Env.t) : unit =
+  fprintf ppf "[%a]"
+    (pp_print_list ~pp_sep: comma_space print_env_entry) env
+
+and print_env_entry ppf ((x, _, v) : Env.entry) : unit =
+  let print_ref ppf v = match !v with
+    | None -> fprintf ppf "<undef>"
+    | Some v -> print_value 0 ppf v
+  in
+  fprintf ppf "%s =@ %a" x print_ref v

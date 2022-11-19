@@ -14,3 +14,6 @@ module StringMap = Map.Make(String)
 exception Invariant of string
 exception NotImplemented
 
+let invariant msg = raise @@ Invariant msg
+let not_implemented () = raise NotImplemented
+

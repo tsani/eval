@@ -1,7 +1,8 @@
 open Syntax
+open Type
 
 (* Maps tvar names to their possible instantiation *)
-type sub = tp option Util.StringMap.t
+type sub = Type.t option Util.StringMap.t
 
 let empty_sub = Util.StringMap.empty
 
@@ -55,7 +56,7 @@ let rec all_in : tp -> tmvar_name list = function
 let all_in_ctx (ctx : Ctx.t) : tmvar_name list =
   (* We can just ignore the binders since bound tvars appear as TVar instead of TMVar in the tp
    *)
-  List.fold_right (fun (_, tp) names -> all_in tp @ names) ctx []
+  List.fold_right (fun (_, (_, tp)) names -> all_in tp @ names) ctx []
 
 
 (* Applies a TMVar substitution to a type.
@@ -76,7 +77,7 @@ let rec apply_sub (tmvars : sub) : tp -> tp = function
 
 (* Applies the given substitution to each type in a context. *)
 let apply_sub_to_ctx (tmvars : sub) : Ctx.t -> Ctx.t =
-  List.map (fun (tbinders, tp) -> (tbinders, apply_sub tmvars tp))
+  List.map (fun (x, (tbinders, tp)) -> (x, (tbinders, apply_sub tmvars tp)))
 
 (* Removes all instantiated variables from a substitution *)
 let prune_sub : sub -> sub = Util.StringMap.filter begin fun _ -> function

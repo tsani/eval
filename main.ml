@@ -1,7 +1,20 @@
 open Syntax
 open Eval
 
-let program = [
+let program = let open Type in let open Term in let open Decl in let open Sugar in [
+  TpDecl {
+    name = "Bool";
+    tvar_binders = [];
+    constructors = [{
+      owner_name = "Bool";
+      name = "True";
+      fields = [];
+    }; {
+      owner_name = "Bool";
+      name = "False";
+      fields = [];
+    }];
+  };
   TpDecl {
     name = "List";
     tvar_binders = ["a"];
@@ -12,7 +25,7 @@ let program = [
     }; {
       owner_name = "List";
       name = "Cons";
-      fields = Sugar.[TVar "a"; ty_list (TVar "a")];
+      fields = [TVar "a"; ty_list (TVar "a")];
     }];
   };
   TpDecl {
@@ -25,31 +38,53 @@ let program = [
     }; {
       owner_name = "Nat";
       name = "S";
-      fields = Sugar.[ty_nat];
+      fields = [ty_nat];
     }]
   };
   TmDecl {
+    name = "pred";
+    typ = (mono @@ arrows [ty_nat] ty_nat);
+    recursive = false;
+    body = Some (
+      lam "n" @@ case (v 0) [
+        pzero --> zero;
+        psucc (pv "n'") --> v 0;
+      ]
+    );
+  };
+  TmDecl {
     name = "plus";
-    typ = Sugar.(mono @@ arrows [ty_nat; ty_nat] ty_nat);
+    typ = (mono @@ arrows [ty_nat; ty_nat] ty_nat);
     recursive = true;
-    body = Some begin let open Sugar in
-      lams 2 begin
+    body = Some begin
+      lams ["n"; "m"] begin
         case (v 0) [
           pzero --> v 1;
-          psucc pv --> succ (apps (r "plus") [v 2; v 0]);
+          psucc (pv "m'") --> apps (r "plus") [succ (v 2); v 0];
         ]
       end
     end;
   };
   TmDecl {
-    name = "fold_list";
-    typ = Sugar.(["a"; "b"], arrows [arrows [TVar "a"; TVar "b"] (TVar "b"); TVar "b"; ty_list (TVar "a")] (TVar "b"));
+    name = "times";
+    typ = (mono @@ arrows [ty_nat; ty_nat] ty_nat);
     recursive = true;
-    body = Some begin let open Sugar in
-      lams 3 begin (* v 0 : List a, v 1 : b, v 2 : a -> b -> b *)
+    body = Some (
+      lams ["n"; "m"] @@ case (v 0) [
+        pzero --> zero;
+        psucc (pv "m'") --> apps (r "plus") [v 2; apps (r "times") [v 2; v 0]];
+      ]
+    );
+  };
+  TmDecl {
+    name = "fold_list";
+    typ = (["a"; "b"], arrows [arrows [TVar "a"; TVar "b"] (TVar "b"); TVar "b"; ty_list (TVar "a")] (TVar "b"));
+    recursive = true;
+    body = Some begin
+      lams ["l"; "e"; "f"] begin (* v 0 : List a, v 1 : b, v 2 : a -> b -> b *)
         case (v 0) [
           pnil --> v 1;
-          pcons pv pv --> (* v 0 : List a, v 1 : a, v 2 onwards above *)
+          pcons (pv "x") (pv "xs") --> (* v 0 : List a, v 1 : a, v 2 onwards above *)
             apps (v 4) [v 1; apps (r "fold_list") [v 4; v 3; v 0]]
         ]
       end
@@ -57,34 +92,32 @@ let program = [
   };
   TmDecl {
     name = "map";
-    typ = Sugar.(["a"; "b"], arrows [arrow (TVar "a") (TVar "b"); ty_list (TVar "a")] @@ ty_list (TVar "b"));
+    typ = (["a"; "b"], arrows [arrow (TVar "a") (TVar "b"); ty_list (TVar "a")] @@ ty_list (TVar "b"));
     recursive = true;
-    body = Some begin let open Sugar in
-      lam begin
-        lam begin
-          case (v 0) [
-            pnil --> nil;
-            pcons pv pv --> cons (v 3 @@@ v 1) (apps (r "map") [v 3; v 0]);
-          ]
-        end
+    body = Some begin
+      lams ["f"; "l"] begin
+        case (v 0) [
+          pnil --> nil;
+          pcons (pv "x") (pv "xs") --> cons (v 3 @@@ v 1) (apps (r "map") [v 3; v 0]);
+        ]
       end
     end;
   };
   TmDecl {
     name = "sum_list";
-    typ = Sugar.(mono @@ arrows [ty_list ty_nat] ty_nat);
+    typ = mono @@ arrows [ty_list ty_nat] ty_nat;
     recursive = false;
-    body = Some Sugar.(apps (r "fold_list") [r "plus"; zero])
+    body = Some (apps (r "fold_list") [r "plus"; zero])
   };
   TmDecl {
     name = "double";
-    typ = Sugar.(mono @@ Arrow (ty_nat, ty_nat));
+    typ = mono @@ Arrow (ty_nat, ty_nat);
     recursive = true;
-    body = Some begin let open Sugar in
-      lam begin
+    body = Some begin
+      lam "n" begin
         case (v 0) [
           pconst "Z" [] --> begin const "Z" [] end;
-          pconst "S" [pv] --> begin
+          pconst "S" [pv "n'"] --> begin
             const "S" [const "S" [r "double" @@@ v 0]]
           end
         ]
@@ -93,93 +126,91 @@ let program = [
   };
   TmDecl {
     name = "two";
-    typ = Sugar.(mono @@ ty_nat);
+    typ = mono @@ ty_nat;
     recursive = false;
-    body = Some Sugar.(const "S" [const "S" [const "Z" []]]);
+    body = Some (const "S" [const "S" [const "Z" []]]);
   };
   TmDecl {
     name = "four";
-    typ = Sugar.(mono @@ ty_nat);
+    typ = mono @@ ty_nat;
     recursive = false;
-    body = Some Sugar.(r "double" @@@ r "two");
+    body = Some (r "double" @@@ r "two");
   };
   TmDecl {
     name = "halve";
-    typ = Sugar.(mono @@ Arrow (ty_nat, ty_nat));
+    typ = mono @@ Arrow (ty_nat, ty_nat);
     recursive = true;
-    body = Some begin let open Sugar in
-      lam begin
+    body = Some begin
+      lam "n" begin
         case (v 0) [
           pconst "Z" [] --> const "Z" [];
           pconst "S" [pconst "Z" []] --> const "Z" [];
-          pconst "S" [pconst "S" [pv]] --> const "S" [r "halve" @@@ v 0];
+          pconst "S" [pconst "S" [pv "n'"]] --> const "S" [r "halve" @@@ v 0];
         ]
       end
     end;
   };
   TmDecl {
     name = "half_of_four";
-    typ = Sugar.(mono @@ ty_nat);
+    typ = mono @@ ty_nat;
     recursive = false;
-    body = Some Sugar.(r "halve" @@@ r "four");
+    body = Some (r "halve" @@@ r "four");
   };
   TmDecl {
     name = "length";
-    typ = Sugar.(["a"], Arrow (ty_list @@ TVar "a", ty_nat));
+    typ = (["a"], Arrow (ty_list @@ TVar "a", ty_nat));
     recursive = true;
-    body = Some begin let open Sugar in
-      lam begin
+    body = Some begin
+      lam "l" begin
         case (v 0) [
           pconst "Nil" [] --> const "Z" [];
-          pconst "Cons" [ignored; pv] --> const "S" [r "length" @@@ v 0];
+          pconst "Cons" [ignored; pv "xs"] --> const "S" [r "length" @@@ v 0];
         ]
       end
     end
   };
   TmDecl {
     name = "sample_list";
-    typ = Sugar.(mono @@ ty_list ty_nat);
+    typ = mono @@ ty_list ty_nat;
     recursive = false;
-    body = Some Sugar.(list [nat 0; nat 1; nat 2; nat 3; nat 4]);
+    body = Some (list [nat 0; nat 1; nat 2; nat 3; nat 4]);
   };
   TmDecl {
     name = "sample_list_sum";
-    typ = Sugar.(mono @@ ty_nat);
+    typ = mono @@ ty_nat;
     recursive = false;
-    body = Some Sugar.(r "sum_list" @@@ r "sample_list");
+    body = Some (r "sum_list" @@@ r "sample_list");
   };
   TmDecl {
     name = "sample_list_length";
-    typ = mono @@ Sugar.ty_nat;
+    typ = mono @@ ty_nat;
     recursive = false;
-    body = Some Sugar.(r "length" @@@ r "sample_list")
+    body = Some (r "length" @@@ r "sample_list")
   };
   TmDecl {
     name = "replicate";
-    typ = Sugar.(["a"], arrows [TVar "a"; ty_nat] @@ ty_list (TVar "a"));
+    typ = (["a"], arrows [TVar "a"; ty_nat] @@ ty_list (TVar "a"));
     recursive = true;
-    body = Some begin let open Sugar in
-      lam begin
-        lam begin
-          case (v 0) [
-            pzero --> nil;
-            psucc pv --> cons (v 2) (apps (r "replicate") [v 2; v 0]);
-          ]
-        end
+    body = Some begin
+      lams ["x"; "n"] begin
+        case (v 0) [
+          pzero --> nil;
+          psucc (pv "n'") --> cons (v 2) (apps (r "replicate") [v 2; v 0]);
+        ]
       end;
     end
   };
   TmDecl {
     name = "list_of_lists";
-    typ = mono @@ Sugar.(ty_list (ty_list ty_nat));
+    typ = mono @@ (ty_list (ty_list ty_nat));
     recursive = false;
-    body = Some Sugar.(apps (r "replicate") [r "sample_list"; nat 5])
+    body = Some (apps (r "replicate") [r "sample_list"; nat 5])
   };
   TmDecl {
     name = "list_of_nats";
-    typ = mono @@ Sugar.(ty_list ty_nat);
+    typ = mono @@ (ty_list ty_nat);
     recursive = false;
-    body = Some Sugar.(apps (r "map") [r "length"; r "list_of_lists"]);
+    body = Some (apps (r "map") [r "length"; r "list_of_lists"]);
   };
   TpDecl {
     name = "Tree";
@@ -191,22 +222,21 @@ let program = [
     }; {
       owner_name = "Tree";
       name = "Node";
-      fields = Sugar.([TVar "a"; ty_list (ty_tree (TVar "a"))]);
+      fields = ([TVar "a"; ty_list (ty_tree (TVar "a"))]);
     }]
   };
   TmDecl {
     name = "fold_tree";
-    typ = Sugar.(
-      ["a"; "b"],
+    typ = ( ["a"; "b"],
       (* (a -> List b -> b) -> b -> Tree a -> b *)
       arrows [arrows [TVar "a"; ty_list (TVar "b")] (TVar "b"); TVar "b"; ty_tree (TVar "a")] (TVar "b")
     );
     recursive = true;
-    body = Some begin let open Sugar in
-      lams 3 begin
+    body = Some begin
+      lams ["f"; "e"; "t"] begin
         case (v 0) (* v 0 : Tree a, v 1 : b, v 2: a -> List b -> b *) [
           pconst "Empty" [] --> v 1;
-          pconst "Node" [pv; pv] -->
+          pconst "Node" [pv "x"; pv "ts"] -->
             (* v 0 : List (Tree a), v 1 : a, v 2 : Tree a; v 3 : b, v 4 : a -> List b -> b *)
             apps (v 4) [v 1; apps (r "map") [apps (r "fold_tree") [v 4; v 3]; v 0]];
         ]
@@ -215,11 +245,11 @@ let program = [
   };
   TmDecl {
     name = "tree_size";
-    typ = Sugar.(["a"], arrows [ty_tree (TVar "a")] ty_nat);
+    typ = (["a"], arrows [ty_tree (TVar "a")] ty_nat);
     recursive = false;
-    body = Some begin let open Sugar in
+    body = Some begin
       apps (r "fold_tree") [
-        lams 2 begin (* v 0 : List Nat, v 1 : a *)
+        lams ["x"; "r"] begin (* v 0 : List Nat, v 1 : a *)
           succ (r "sum_list" @@@ v 0)
         end;
         zero;
@@ -228,9 +258,9 @@ let program = [
   };
   TmDecl {
     name = "sample_tree";
-    typ = Sugar.(mono @@ ty_tree ty_nat);
+    typ = mono @@ ty_tree ty_nat;
     recursive = false;
-    body = Some begin let open Sugar in
+    body = Some begin
       node zero [
         node (nat 1) [empty_tree; node (nat 2) []; node (nat 3) []];
         (*
@@ -247,25 +277,49 @@ let program = [
   };
   TmDecl {
     name = "sample_tree_size";
-    typ = mono @@ Sugar.ty_nat;
+    typ = mono @@ ty_nat;
     recursive = false;
-    body = Some Sugar.(r "tree_size" @@@ r "sample_tree");
+    body = Some (r "tree_size" @@@ r "sample_tree");
+  };
+  TmDecl {
+    name = "fact_tr";
+    typ = mono @@ (arrows [ty_nat] ty_nat);
+    recursive = false;
+    body = Some (
+      lam "x" @@ (* fun x => *)
+      recdef "fact" begin (* let rec fact = *)
+        lams ["acc"; "n"] @@ (* fun acc => fun n => *)
+        case (v 0) [ (* match n with *)
+          pzero --> v 1; (* | 0 -> 1 *)
+          psucc (pv "n'") --> apps (v 3) [apps (r "times") [v 2; v 1]; v 0]; (* | S n' -> fact (n * acc) n' *)
+        ]
+      end @@
+      apps (v 0) [nat 1; v 1]
+    );
+  };
+  TmDecl {
+    name = "fact5";
+    typ = mono @@ ty_nat;
+    recursive = false;
+    body = Some (
+      r "fact_tr" @@@ nat 5
+    );
   };
 ]
 
 open Format
 
 let print_mismatch_kind ppf : Typecheck.unify_kind -> unit = function
-  | `scru_pat (scru_and_tp, pat_and_tp) ->
+  | `scru_pat (scope, scru_and_tp, pat_and_tp) ->
     fprintf ppf "@[<v>@[<v 2>when unifying the match scrutinee@,@[%a@]@]@,@[<v 2>with the pattern@,@[%a@]@]@]"
-      Pretty.print_tm_tp scru_and_tp
+      (Pretty.print_tm_tp scope) scru_and_tp
       Pretty.print_pat_tp pat_and_tp
-  | `app e -> fprintf ppf "when expecting @[%a@] to have a function type." (Pretty.print_tm 0) e
-  | `ctor_spine ((ctor, ctor_tp), (sp, inf_ctor_tp)) ->
+  | `app (scope, e) -> fprintf ppf "when expecting @[%a@] to have a function type." (Pretty.print_tm 0 scope) e
+  | `ctor_spine (scope, (ctor, ctor_tp), (sp, inf_ctor_tp)) ->
     fprintf ppf "@[<v>@[<hv 2>when matching constructor@ @[<hv 2>%s :@ %a@]@]@,@[<hv 2>with spine@ %a@]@,@[hv 2>for which the inferred constructor type is@ %a@]@]"
       ctor
       (Pretty.print_tp 0) ctor_tp
-      (Pretty.print_spine 10) sp
+      (Pretty.print_spine 10 scope) sp
       (Pretty.print_tp 0) inf_ctor_tp
   | `ctor_pat_spine ((ctor, ctor_tp), (pat_sp, inf_ctor_tp)) ->
     fprintf ppf "@[<v>@[<hv 2>when matching constructor@ @[<hv 2>%s :@ %a@]@]@,@[<hv 2>with pattern spine@ %a@]@,@[hv 2>for which the inferred constructor type is@ %a@]@]"
@@ -273,17 +327,16 @@ let print_mismatch_kind ppf : Typecheck.unify_kind -> unit = function
       (Pretty.print_tp 0) ctor_tp
       (Pretty.print_pat_spine 10) pat_sp
       (Pretty.print_tp 0) inf_ctor_tp
-  | `case_body (body, body_tp, body_tp') ->
+  | `case_body ((scope, body), body_tp, body_tp') ->
     fprintf ppf "@[<v>@[<hv 2>when unifying the inferred type@ %a@]@,@[<hv 2>of the case body@ %a@]@,@[<hv 2>against the inferred type of the other branches@ %a@]@]"
       (Pretty.print_tp 0) body_tp
-      (Pretty.print_tm 0) body
+      (Pretty.print_tm 0 scope) body
       (Pretty.print_tp 0) body_tp'
   | `decl (c, user_tp, inf_tp) ->
     fprintf ppf "@[<v>@[<hv 2>when unifying the given type@ %a@]@,of the declaration for `%s'@,@[<hv 2>against the inferred type@ %a@]@]"
       (Pretty.print_tp 0) user_tp
       c
       (Pretty.print_tp 0) inf_tp
-      
 
 let print_type_error ppf : Typecheck.TypeError.t -> unit = function
   | `mismatch (k, t1, t2) ->
@@ -306,8 +359,8 @@ let last_n (l : 'a list) (n : int) =
 let print_term_stack ppf term_stack =
   let term_stack = last_n term_stack 3 in 
   fprintf ppf "@[<v>Enclosing terms:@,%a@]"
-    (pp_print_list ~pp_sep: pp_print_cut begin fun ppf e ->
-      fprintf ppf "- @[%a@]" (Pretty.print_tm 0) e
+    (pp_print_list ~pp_sep: pp_print_cut begin fun ppf (scope, e) ->
+      fprintf ppf "- @[%a@]" (Pretty.print_tm 0 scope) e
     end) term_stack
 
 let print_error_report ppf ({ error; term_stack } : Typecheck.TypeError.report): unit =
@@ -322,6 +375,6 @@ let sg =
   | Ok _ ->
     fprintf ppf "Typechecking succeeded!@,@]@.";
     let open Result in
-    match eval_program (State.empty Format.err_formatter) program with
+    match eval_program (State.empty Format.std_formatter) program with
     | Error e -> fprintf ppf "@[<v 2>Runtime error.@,%a@]@." Eval.RuntimeError.print e
     | Ok _ -> fprintf ppf "Evaluation finished.@."

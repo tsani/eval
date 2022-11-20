@@ -1,5 +1,6 @@
 open Format
 open Syntax
+open Internal
 open Term
 open Type
 

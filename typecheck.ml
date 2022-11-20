@@ -1,4 +1,5 @@
 open Syntax
+open Internal
 
 (* Synthesizes the (polymorphic) type of a constructor from its ctor definition
  * and its owning type's definition.

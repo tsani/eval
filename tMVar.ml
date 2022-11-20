@@ -1,4 +1,5 @@
 open Syntax
+open Internal
 open Type
 
 (* Maps tvar names to their possible instantiation *)

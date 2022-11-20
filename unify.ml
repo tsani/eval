@@ -1,4 +1,5 @@
 open Syntax
+open Internal
 open Type
 
 type unify_error = [

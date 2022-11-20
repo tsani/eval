@@ -1,4 +1,5 @@
 open Syntax
+open Internal
 open Eval
 
 let program = let open Type in let open Term in let open Decl in let open Sugar in [

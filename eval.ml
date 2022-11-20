@@ -1,4 +1,5 @@
 open Syntax
+open Internal
 open Term
 
 module State = struct

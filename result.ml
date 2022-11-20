@@ -20,3 +20,11 @@ let map_error (f : 'e -> 'g) (r : ('e, 'a) result) : ('g, 'a) result = match r w
 
 let ok x = Ok x
 let error e = Error e
+
+let rec traverse (f : 'a -> ('e, 'b) result) (l : 'a list) : ('e, 'b list) result =
+  match l with
+  | [] -> ok []
+  | x :: xs ->
+    bind (f x) @@ fun y ->
+    bind (traverse f xs) @@ fun ys ->
+    ok (y :: ys)

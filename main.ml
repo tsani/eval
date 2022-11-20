@@ -81,7 +81,7 @@ let program = let open Type in let open Term in let open Decl in let open Sugar 
     typ = (["a"; "b"], arrows [arrows [TVar "a"; TVar "b"] (TVar "b"); TVar "b"; ty_list (TVar "a")] (TVar "b"));
     recursive = true;
     body = Some begin
-      lams ["l"; "e"; "f"] begin (* v 0 : List a, v 1 : b, v 2 : a -> b -> b *)
+      lams ["f"; "e"; "l"] begin (* v 0 : List a, v 1 : b, v 2 : a -> b -> b *)
         case (v 0) [
           pnil --> v 1;
           pcons (pv "x") (pv "xs") --> (* v 0 : List a, v 1 : a, v 2 onwards above *)

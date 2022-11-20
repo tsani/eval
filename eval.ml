@@ -99,7 +99,7 @@ let rec eval (s : State.t) (env : Env.t) : Term.t -> Value.t = function
         debug_print s "@[<hv 2>Evaluate application@ `%a'@ right side.@ "
         (Pretty.print_tm 0 sco) e2;
         let v2 = eval s env e2 in
-        debug_print s "@]@,@[<hv>Perform application:@ %a@ to@ %a]@,"
+        debug_print s "@]@,@[<hv>Perform application:@ %a@ to@ %a@]@,"
         (Pretty.print_value 0) v1
         (Pretty.print_value 0) v2;
         let env' = Env.(extend clo_env @@ alloc_entry ~contents: (Some v2) x) in

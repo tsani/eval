@@ -43,15 +43,23 @@ let print_rec_flag ppf = function
   | Rec -> fprintf ppf "rec "
   | NonRec -> ()
 
+let rec collapse_funs : Term.t -> var_name list * Term.t = function
+  | Fun (x, e) -> let (xs, e) = collapse_funs e in (x :: xs, e)
+  | e -> ([], e)
+
 let rec print_tm lvl scope (ppf : formatter) : Term.t -> unit = function
   | Num n -> fprintf ppf "%s" (string_of_int n)
-  | Var i -> fprintf ppf "!%s" (string_of_int i)
+  | Var i -> begin match lookup_var scope i with
+    | Some x -> fprintf ppf "%s" x
+    | None -> fprintf ppf "!%d" i
+  end
   | Ref f -> fprintf ppf "%s" f
   | Fun (x, e) ->
-    fprintf ppf "%a@[<hv 2>fun %s -> @,%a@]%a"
+    let (xs, e) = collapse_funs e in
+    fprintf ppf "%a@[<hv 2>fun %a ->@ %a@]%a"
       lparen (lvl > 0)
-      x
-      (print_tm 0 (Scope.extend scope x)) e
+      (pp_print_list ~pp_sep: (fun ppf _ -> fprintf ppf " ") pp_print_string) (x :: xs)
+      (print_tm 0 (Scope.extend_many scope @@ x :: xs)) e
       rparen (lvl > 0)
   | App (e1, e2) (* prec 9 *) ->
     fprintf ppf "%a@[<hv 2>%a @,%a@]%a"
@@ -87,9 +95,9 @@ and print_spine ?(sep = pp_print_space) lvl scope ppf : Term.t list -> unit =
 
 and print_case scope ppf : case -> unit = function
   | Case (pat, body) ->
-    fprintf ppf "@[<hv 2>%a -> @,%a@]"
+    fprintf ppf "@[<hv 2>%a ->@ %a@]"
       (print_pattern 0) pat
-      (print_tm 0 (Scope.concat (pattern_vars pat) scope)) body
+      (print_tm 0 (extend_with_pattern_vars scope pat)) body
 
 and print_cases scope ppf : case list -> unit = function
   | [] -> ()
@@ -134,17 +142,14 @@ let rec print_value lvl ppf (v : Value.t) : unit = let open Value in match v wit
             rparen (lvl > 8)
   end
   | Clo (env, x, e) ->
-    fprintf ppf "%a@[<hv 2>fun %s -> @,%a@]%a"
-      lparen (lvl > 0)
-      x
-      (print_tm 0 (Env.to_scope env)) e
-      rparen (lvl > 0)
+    let e = Fun (x, e) in
+    print_tm 0 (Env.to_scope env) ppf e
 
 and print_value_spine lvl ppf : Value.spine -> unit =
   pp_print_list ~pp_sep: pp_print_space (print_value lvl) ppf
 
 let rec print_env ppf (env : Env.t) : unit =
-  fprintf ppf "[%a]"
+  fprintf ppf "[@[%a@]]"
     (pp_print_list ~pp_sep: comma_space print_env_entry) env
 
 and print_env_entry ppf ((x, _, v) : Env.entry) : unit =
@@ -152,4 +157,4 @@ and print_env_entry ppf ((x, _, v) : Env.entry) : unit =
     | None -> fprintf ppf "<undef>"
     | Some v -> print_value 0 ppf v
   in
-  fprintf ppf "%s =@ %a" x print_ref v
+  fprintf ppf "@[%s =@ %a@]" x print_ref v

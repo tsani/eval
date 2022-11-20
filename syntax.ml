@@ -26,7 +26,7 @@ module Scope = struct
     | NonRec -> fun sco x -> sco
   let lookup : t -> index -> entry option = lookup_var
 
-  let concat s1 s2 : t = s1 @ s2
+  let extend_many (s : t) (xs : entry list) : t = List.fold_left extend s xs
 end
 
 module Type = struct
@@ -101,11 +101,15 @@ module Term = struct
   let case_body (Case (_, e)) = e
   let case_pattern (Case (p, _)) = p
 
-  let rec pattern_vars (p : pattern) : Scope.t = match p with
-    | WildcardPattern -> Scope.empty
-    | VariablePattern x -> Scope.single x
-    | NumPattern _ -> Scope.empty
-    | ConstPattern (_, ps) -> List.fold_right (fun p -> Scope.concat (pattern_vars p)) ps Scope.empty
+  (* Extends the given scope with all variables defined in a pattern. *)
+  let extend_with_pattern_vars : Scope.t -> pattern -> Scope.t =
+    let rec go acc p = match p with
+      | WildcardPattern -> acc
+      | VariablePattern x -> Scope.extend acc x
+      | NumPattern _ -> acc
+      | ConstPattern (_, ps) -> List.fold_left go acc ps
+    in
+    go
 end
 
 (* A value is the result of evaluating a term. *)

@@ -122,7 +122,7 @@ and check_case lookup_ctor lookup_tm scope = function
 
 let rec quantify tvars = function
   | E.Type.Int -> tvars
-  | E.Type.Arrow (t1, t2) -> quantify (quantify tvars t2) t1
+  | E.Type.Arrow (t1, t2) -> List.fold_left quantify tvars [t1; t2]
   | E.Type.TVar a -> a :: tvars
   | E.Type.Named (_, ts) -> List.fold_left quantify tvars ts
 
@@ -136,5 +136,22 @@ let check_decl (tps : (string * int) list) (ctors : (string * int) list) (tms : 
     Result.bind (check_tp (to_lookup tps) (fun _ -> true) typ) @@
     let binders = quantify [] typ in fun typ ->
     let tms' = if recursive then name :: tms else tms in
-    Result.bind (check_tm (to_lookup ctors) (to_member tms) Scope.empty body) @@ fun body ->
+    Result.bind (check_tm (to_lookup ctors) (to_member tms') Scope.empty body) @@ fun body ->
     Result.ok @@ I.Decl.(TmDecl { name; typ = (binders, typ); recursive; body = Some body })
+
+let rec check_program (tps : (string * int) list) (ctors : (string * int) list) (tms : string list) : E.Decl.program -> I.Decl.program result =
+  function
+  | [] -> Result.ok []
+  | d :: ds ->
+    Result.bind (check_decl tps ctors tms d) @@ fun d -> match d with
+    | I.Decl.(TpDecl { name; tvar_binders; constructors }) ->
+      Result.bind begin
+        check_program
+          ((name, List.length tvar_binders) :: tps)
+          (List.map (fun I.Decl.({ name; fields }) -> (name, List.length fields)) constructors @ ctors)
+          tms
+          ds
+      end @@ fun ds -> Result.ok @@ d :: ds
+      | I.Decl.(TmDecl { name }) ->
+        Result.bind (check_program tps ctors (name :: tms) ds) @@ fun ds ->
+        Result.ok @@ d :: ds

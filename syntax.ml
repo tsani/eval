@@ -27,6 +27,14 @@ module Scope = struct
   let lookup : t -> index -> entry option = lookup_var
 
   let extend_many (s : t) (xs : entry list) : t = List.fold_left extend s xs
+
+  let index_of x : t -> index option =
+    let rec go i = function
+      | [] -> None
+      | x' :: xs when x' = x -> Some i
+      | _ :: xs -> go (i+1) xs
+    in
+    go 0
 end
 
 module External = struct
@@ -39,6 +47,12 @@ module External = struct
   end
 
   module Term = struct
+    type pattern =
+      | ConstPattern of ctor_name * pattern list
+      | NumPattern of int
+      | VariablePattern of var_name
+      | WildcardPattern
+
     type t =
       | Num of int
       | Var of var_name 
@@ -54,12 +68,6 @@ module External = struct
 
      and spine = t list
      and case = Case of pattern * t
-
-     and pattern =
-       | ConstPattern of ctor_name * pattern list
-       | NumPattern of int
-       | VariablePattern of var_name
-       | WildcardPattern
   end
 
   module Decl = struct

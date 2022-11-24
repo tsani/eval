@@ -24,8 +24,11 @@ let is_fake { offset; line; column; filename } = offset = -1 || line = -1 || col
 (* Increments offset and line resetting column to 1 *)
 let next_line l = { l with offset = l.offset + 1; line = l.line + 1; column = l.column + 1 }
 
-(* Increments offset and column keeping line unchanged. *)
-let next_char l = { l with offset = l.offset + 1; column = l.column + 1 }
+(* Increases the offset and column of the location by the given count, keeping the line unchanged. *)
+let bump n l = { l with offset = l.offset + n; column = l.column + n }
+
+(* Increments the offset and column of the location, keeping line unchanged. *)
+let next_char = bump 1
 
 module Span = struct
   (* A span of text in a source file. *)
@@ -33,6 +36,8 @@ module Span = struct
     start : t;
     stop : t;
   }
+
+  let make (start : t) (stop : t) : span = { start; stop }
 
   type t = span
 

@@ -40,58 +40,68 @@ end
 module External = struct
   module Type = struct
     type t =
-      | Int
-      | Arrow of t * t
-      | TVar of tvar_name
-      | Named of tp_name * t list
+      | Int of Loc.span
+      | Arrow of Loc.span * t * t
+      | TVar of Loc.span * tvar_name
+      | Named of Loc.span * tp_name * t list
   end
 
   module Term = struct
+    type loc = Loc.span
+
     type pattern =
-      | ConstPattern of ctor_name * pattern list
-      | NumPattern of int
-      | VariablePattern of var_name
-      | WildcardPattern
+      | ConstPattern of Loc.span * ctor_name * pattern list
+      | NumPattern of Loc.span * int
+      | VariablePattern of Loc.span * var_name
+      | WildcardPattern of Loc.span
 
     type t =
-      | Num of int
-      | Var of var_name 
+      | Num of loc * int
+      | Var of loc * var_name
       (* in external syntax, we can't tell apart a local var ref from a ref to
       another definition, so there is no case for "ref" *)
-      | Fun of var_name * t
-      | App of t * t
-      | Let of rec_flag * var_name * t * t
-      | Match of t * case list
+      | Fun of loc * (loc * var_name) * t
+      | App of loc * t * t
+      | Let of loc * rec_flag * (loc * var_name) * t * t
+      | Match of loc * t * case list
       (* we distinguish function applications from constructor applications since constructors
       use uppercase names. *)
-      | Const of ctor_name * spine
+      | Const of loc * ctor_name * spine
 
      and spine = t list
-     and case = Case of pattern * t
+     and case = Case of Loc.span * pattern * t
   end
 
   module Decl = struct
+    (** A declaration for a term. *)
     type tm = {
       name : tm_name;
       typ : Type.t;
       recursive : bool;
       body : Term.t;
+      loc : Loc.span;
     }
 
     type ctor = {
       name : ctor_name;
       fields : Type.t list;
+      loc : Loc.span;
     }
 
     type tp = {
       name : tp_name;
       tvar_binders : tvar_name list;
       constructors : ctor list;
+      loc : Loc.span;
     }
 
     type t =
       | TpDecl of tp
       | TmDecl of tm
+
+    let loc_of_decl = function
+      | TpDecl { loc } -> loc
+      | TmDecl { loc } -> loc
 
     type program = t list
   end
@@ -99,12 +109,33 @@ end
 
 module Internal = struct
   module Type = struct
+    (** The location of a type in a source file.
+        Types can appear literally in a program, e.g. as the type of a
+        constructor or as an annotation on a definition.
+        Or type can be inferred from the syntax of a term.
+        To report the best error messages possible, we track which kind of location a type stores.
+    *)
+    type loc = [
+      | `inferred of Loc.span (** The location refers to the syntax from which the type was inferred. *)
+      | `literal of Loc.span (** The type literally appears in the source program. *)
+      | `fake (** The location is completely made up. *)
+    ]
+
     type t
-      = Int
-      | Arrow of t * t
-      | TVar of tvar_name
-      | TMVar of tmvar_name
-      | Named of tp_name * t list (* an identifier for a user-defined data type and a list of type parameters *)
+      = Int of loc
+      | Arrow of loc * t * t
+      | TVar of loc * tvar_name
+      | TMVar of loc * tmvar_name (* often, the location of a TMVar is fake *)
+      | Named of loc * tp_name * t list (* an identifier for a user-defined data type and a list of type parameters *)
+
+    (** Try to get the location associated to a type. This fails if the type is a TMVar, because at
+        this point we don't know anything about TMVar substitutions. *)
+    let loc_of_tp : t -> loc option = function
+      | Int loc -> Some loc
+      | Arrow (loc, _, _) -> Some loc
+      | TVar (loc, _) -> Some loc
+      | TMVar _ -> None
+      | Named (loc, _, _) -> Some loc
 
     (* A 'type scheme' is a bunch of quantifiers together with a type.
     * This is in contrast to allowing arbitrary foralls to appear anywhere in a type.
@@ -144,41 +175,60 @@ module Internal = struct
 
   (* A term is a an unevaluated expression. *)
   module Term = struct
+    type loc = Loc.span
+    let fake_loc = Loc.Span.fake
+
     type t
-      = Num of int
-      | Var of index
-      | Ref of tm_name
-      | Fun of var_name * t
-      | App of t * t
-      | Let of rec_flag * var_name * t * t
-      | Match of t * case list
-      | Const of ctor_name * spine
+      = Num of loc * int
+      | Var of loc * index (* The span refers to the span of the original named variable *)
+      | Ref of loc * tm_name
+      | Fun of loc * (loc * var_name) * t
+      | App of loc * t * t
+      | Let of loc * rec_flag * (loc * var_name) * t * t
+      | Match of loc * t * case list
+      | Const of loc * ctor_name * spine
 
     and spine = t list
 
     and case =
-      | Case of pattern * t
+      | Case of Loc.span * pattern * t
 
     and pattern =
-      | ConstPattern of ctor_name * pattern list
-      | NumPattern of int
-      | VariablePattern of var_name
-      | WildcardPattern
+      | ConstPattern of Loc.span * ctor_name * pattern list
+      | NumPattern of Loc.span * int
+      | VariablePattern of Loc.span * var_name
+      | WildcardPattern of Loc.span
 
     type term = t
 
-    let case_body (Case (_, e)) = e
-    let case_pattern (Case (p, _)) = p
+    let case_body (Case (_, _, e)) = e
+    let case_pattern (Case (_, p, _)) = p
 
     (* Extends the given scope with all variables defined in a pattern. *)
     let extend_with_pattern_vars : Scope.t -> pattern -> Scope.t =
       let rec go acc p = match p with
-        | WildcardPattern -> acc
-        | VariablePattern x -> Scope.extend acc x
-        | NumPattern _ -> acc
-        | ConstPattern (_, ps) -> List.fold_left go acc ps
+        | WildcardPattern _ -> acc
+        | VariablePattern (_, x) -> Scope.extend acc x
+        | NumPattern (_, _) -> acc
+        | ConstPattern (_, _, ps) -> List.fold_left go acc ps
       in
       go
+
+    let loc_of_tm = function
+      | Num (loc, _) -> loc
+      | Var (loc, _) -> loc
+      | Ref (loc, _) -> loc
+      | Fun (loc, _, _) -> loc
+      | App (loc, _, _) -> loc
+      | Let (loc, _, _, _, _) -> loc
+      | Match (loc, _, _) -> loc
+      | Const (loc, _, _) -> loc
+
+    let loc_of_pattern = function
+      | ConstPattern (loc, _, _) -> loc
+      | NumPattern (loc, _) -> loc
+      | VariablePattern (loc, _) -> loc
+      | WildcardPattern loc -> loc
   end
 
   (* A value is the result of evaluating a term. *)
@@ -200,7 +250,7 @@ module Internal = struct
       reassign the reference to the value.
 
       We also store the name of the variable and whether the variable is
-      recursively defined. 
+      recursively defined.
     *)
     and env_entry = var_name * rec_flag * t option ref
     and env = env_entry list
@@ -243,6 +293,7 @@ module Internal = struct
         Normally, it will be impossible for the evaluator to encounter a None body
         because we don't evaluate under functions. If we do encounter one, it's an infinite recursion.
       *)
+      loc : Loc.span;
     }
 
     (* and here is a single case of a user-defined data-type
@@ -264,6 +315,8 @@ module Internal = struct
 
       (* The types of the fields of this constructor, in order *)
       fields : Type.t list;
+
+      loc : Loc.span;
     }
 
     (* the type of a user-defined data type is a sum of products
@@ -276,22 +329,25 @@ module Internal = struct
     type tp = {
       name : tp_name;
 
-      (* List of type parameter names bound in this type.
-      * All names are unique in this list.
-      *)
+      (** List of type parameter names bound in this type.
+       * All names are unique in this list. *)
       tvar_binders : tvar_name list;
 
-      (* The constructors of this datatype.
-      * By parser invariant, the owner_name of every ctor is the name as `name`
-      * above.
-      *)
+      (** The constructors of this datatype.
+       * By parser invariant, the owner_name of every ctor is the name as `name`
+       * above. *)
       constructors : ctor list;
+      loc : Loc.span;
     }
 
     type 'a t =
       | TpDecl of tp
       | TmDecl of 'a tm
     type 'a decl = 'a t
+
+    let loc_of_decl = function
+      | TpDecl { loc } -> loc
+      | TmDecl { loc } -> loc
 
     (* A program is what is submitted to the evaluator.
       The evaluator then produces a signature in which the term declarations
@@ -351,29 +407,33 @@ module Internal = struct
     open Term
     open Type
 
-    let v i = Var i
-    let n n = Num n
-    let r name = Ref name
-    let lam x e = Fun (x, e)
+    let v i = Var (Loc.Span.fake, i)
+    let n n = Num (Loc.Span.fake, n)
+    let r name = Ref (Loc.Span.fake, name)
+    let lam x e = Fun (Loc.Span.fake, (Loc.Span.fake, x), e)
     let rec lams xs e = match xs with
       | [] -> e
-      | x :: xs -> Fun (x, lams xs e)
-    let case e (cases : (pattern * term) list) = Match (e, List.map (fun (p, e) -> Case (p, e)) cases)
-    let def x e1 e2 = Let (NonRec, x, e1, e2)
-    let recdef x e1 e2 = Let (Rec, x, e1, e2)
+      | x :: xs -> Fun (Loc.Span.fake, (Loc.Span.fake, x), lams xs e)
+    let case e (cases : (pattern * term) list) =
+      Match (Loc.Span.fake, e, List.map (fun (p, e) -> Case (Loc.Span.fake, p, e)) cases)
+    let def x e1 e2 = Let (Loc.Span.fake, NonRec, (Loc.Span.fake, x), e1, e2)
+    let recdef x e1 e2 = Let (Loc.Span.fake, Rec, (Loc.Span.fake, x), e1, e2)
     (* let fix f = Rec f *)
-    let const name spine = Const (name, spine)
-    let (@@@) e1 e2 = App (e1, e2)
+    let const name spine = Const (Loc.Span.fake, name, spine)
+    let (@@@) e1 e2 = App (Loc.Span.fake, e1, e2)
     let (-->) pat e = (pat, e)
     (* Constructs an application of a function of multiple arguments *)
     let apps head spine = List.fold_left (fun head arg -> head @@@ arg) head spine
 
-    (* 'type reference' *)
-    let tr c spine = Named (c, spine)
-    let tr0 c = Named (c, [])
-    let tr1 c tp = Named (c, [tp])
+    (* Type variable *)
+    let tv x = TVar (`fake, x)
 
-    let arrow t1 t2 = Arrow (t1, t2)
+    (* 'type reference' *)
+    let tr c spine = Named (`fake, c, spine)
+    let tr0 c = Named (`fake, c, [])
+    let tr1 c tp = Named (`fake, c, [tp])
+
+    let arrow t1 t2 = Arrow (`fake, t1, t2)
 
     (* Constructs a nested arrow type for a function of multiple parameters.
     *
@@ -382,9 +442,9 @@ module Internal = struct
     *)
     let arrows arg_tps result_tp = List.fold_right arrow arg_tps result_tp
 
-    let ignored = WildcardPattern
-    let pconst name pats = ConstPattern (name, pats)
-    let pv x = VariablePattern x
+    let ignored = WildcardPattern Loc.Span.fake
+    let pconst name pats = ConstPattern (Loc.Span.fake, name, pats)
+    let pv x = VariablePattern (Loc.Span.fake, x)
 
     (* type-specific sugar *)
 

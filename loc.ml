@@ -50,3 +50,5 @@ module Span = struct
   stop of the second. *)
   let join { start; } { stop; } = { start; stop }
 end
+
+type span = Span.t

@@ -2,7 +2,11 @@ open Syntax
 open Internal
 open Type
 
-(* Maps tvar names to their possible instantiation *)
+module P = Pretty.Internal
+
+(** A Type MetaVariable is essentially a free type variable, together with
+    a possible instantiation
+    A TMVar is written like a#n where n is a number. *)
 type sub = Type.t option Util.StringMap.t
 
 let empty_sub = Util.StringMap.empty
@@ -43,36 +47,35 @@ let lookup' (sub : sub) x : [ `uninst | `inst of tp ] = match lookup sub x with
   | `uninst -> `uninst
 
 (* Computes the list of all tmvars appearing in a type, whether instantiated or not. *)
-let rec all_in : tp -> tmvar_name list = function
-  | Int -> []
-  | Arrow (t1, t2) -> all_in t1 @ all_in t2
-  | TVar _ -> []
-  | TMVar x -> [x]
-  | Named (_, ts) -> List.fold_right (fun tp l2 -> all_in tp @ l2) ts []
+let rec all_in : tp -> (loc * tmvar_name) list = function
+  | Int _ -> []
+  | Arrow (_, t1, t2) -> all_in t1 @ all_in t2
+  | TVar (_, _) -> []
+  | TMVar (loc, x) -> [(loc, x)]
+  | Named (_, _, ts) -> List.fold_right (fun tp l2 -> all_in tp @ l2) ts []
 
 (* Computes all TMVar names that appear in the given context by lifting `all_in`.
  * There can be duplicate names. The names of all TMVars are returned, whether
  * instantiated or not.
  *)
-let all_in_ctx (ctx : Ctx.t) : tmvar_name list =
+let all_in_ctx (ctx : Ctx.t) : (loc * tmvar_name) list =
   (* We can just ignore the binders since bound tvars appear as TVar instead of TMVar in the tp
    *)
   List.fold_right (fun (_, (_, tp)) names -> all_in tp @ names) ctx []
 
 
 (* Applies a TMVar substitution to a type.
- * Ensures that any TMVar remaining in the resulting type is uninstantiated.
- *)
+ * Ensures that any TMVar remaining in the resulting type is uninstantiated. *)
 let rec apply_sub (tmvars : sub) : tp -> tp = function
-  | Int -> Int
-  | Named (c, ts) -> Named (c, List.map (apply_sub tmvars) ts)
-  | Arrow (t1, t2) -> Arrow (apply_sub tmvars t1, apply_sub tmvars t2)
-  | TVar x -> TVar x
-  | TMVar x -> begin match lookup tmvars x with
+  | Int loc -> Int loc
+  | Named (loc, c, ts) -> Named (loc, c, List.map (apply_sub tmvars) ts)
+  | Arrow (loc, t1, t2) -> Arrow (loc, apply_sub tmvars t1, apply_sub tmvars t2)
+  | TVar (loc, x) -> TVar (loc, x)
+  | TMVar (loc, x) -> begin match lookup tmvars x with
     | `inst t ->
        (* Format.(fprintf err_formatter "going under var %s@," x); *)
        apply_sub tmvars t
-    | `uninst -> TMVar x
+    | `uninst -> TMVar (loc, x)
     | `not_found -> raise @@ Util.Invariant "no free TMVars allowed"
   end
 
@@ -90,7 +93,7 @@ let print_sub ppf (tmvars : sub) : unit =
   let open Format in
   let print_inst ppf = function
     | None -> fprintf ppf "<uninst>"
-    | Some tp -> Pretty.print_tp 0 ppf tp
+    | Some tp -> P.print_tp 0 ppf tp
   in
   pp_print_list ~pp_sep: pp_print_cut
     (fun ppf (x, inst) -> fprintf ppf "- %s = @[%a@]" x print_inst inst)
@@ -99,19 +102,20 @@ let print_sub ppf (tmvars : sub) : unit =
 
 (* Decides whether a tmvar appears in a type *)
 let rec occurs (tmvars : sub) (x : tmvar_name) : tp -> bool = function
-  | Named (_, ts) -> List.exists (occurs tmvars x) ts
-  | Int -> false
-  | TVar _ -> false
-  | Arrow (t1, t2) -> occurs tmvars x t1 || occurs tmvars x t2
-  | TMVar y when x = y -> true
-  | TMVar y -> match lookup' tmvars y with
+  | Named (_, _, ts) -> List.exists (occurs tmvars x) ts
+  | Int _ -> false
+  | TVar (_, _) -> false
+  | Arrow (_, t1, t2) -> occurs tmvars x t1 || occurs tmvars x t2
+  | TMVar (_, y) when x = y -> true
+  | TMVar (_, y) -> match lookup' tmvars y with
     | `uninst -> false
     | `inst t -> occurs tmvars x t
 
-(* Resolves a chain of TMVar-TMVar instantiations. *)
+(** Resolves a chain of TMVar-TMVar instantiations.
+    Invariant: if chase tmvars t = TMVar a then lookup tmvars a = `uninst *)
 let rec chase (tmvars : sub) (t : tp) : tp = match t with
-  | TMVar x -> begin match lookup' tmvars x with
-    | `uninst -> TMVar x
+  | TMVar (loc, x) -> begin match lookup' tmvars x with
+    | `uninst -> TMVar (loc, x)
     | `inst t -> chase tmvars t
   end
   | _ -> t

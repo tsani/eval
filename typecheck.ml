@@ -1,6 +1,16 @@
 open Syntax
 open Internal
 
+module P = Pretty.Internal
+
+let loc_of_tp (tmvars : TMVar.sub) (t : Type.t) = let open Type in match TMVar.chase tmvars t with
+  | Int loc -> loc
+  | Arrow (loc, _, _) -> loc
+  | TVar (loc, _) -> loc
+  | Named (loc, _, _) -> loc
+  | TMVar (loc, a) -> (* the TMVar must be uninstantiated by postcondition of chase *)
+    loc
+
 (* Synthesizes the (polymorphic) type of a constructor from its ctor definition
  * and its owning type's definition.
  * Given cd : ctor_decl belonging to td : tp_decl, form the overall type of the
@@ -9,11 +19,11 @@ open Internal
  *)
 let syn_ctor_type (td : Decl.tp) (cd : Decl.ctor) : Type.sc =
   let open Type in
-  let decompose_tuple_to_arrows = List.fold_right (fun tp tp' -> Arrow (tp, tp')) in
+  let decompose_tuple_to_arrows = List.fold_right (fun tp tp' -> Arrow (`inferred cd.loc, tp, tp')) in
   ( td.tvar_binders
   , decompose_tuple_to_arrows
       cd.fields
-      (Named (td.name, List.map (fun a -> TVar a) td.tvar_binders))
+      (Named (`inferred cd.loc, td.name, List.map (fun a -> TVar (`inferred td.loc, a)) td.tvar_binders))
   )
 
 type infer_env = {
@@ -47,11 +57,6 @@ let extend_ctx (env : infer_env) (d : Ctx.entry) : infer_env =
 let apply_sub_to_ctx (tmvars : TMVar.sub) : infer_env -> infer_env =
   map_ctx (TMVar.apply_sub_to_ctx tmvars)
 
-(* A Type MetaVariable is essentially a free type variable, together with
-   a possible instantiation
-   A TMVar is written like a#n where n is a number.
- *)
-
 (* Instantiates a type scheme to a type by substituting all (bound) TVars into TMVars.
  * The input TMVar.sub is extended with new uninstantiated TMVars for each
  * 'instantiated' bound tvar.
@@ -70,14 +75,14 @@ let instantiate (s : infer_state) ((tbinders, tp) : Type.sc) : infer_state * Typ
     in
     let s, tmvar_name_pairings = List.fold_right go tbinders (s, []) in
     let rec rename_tvars_to_tmvars : Type.t -> Type.t = let open Type in function
-      | TVar a -> begin match List.assoc_opt a tmvar_name_pairings with
+      | TVar (loc, a) -> begin match List.assoc_opt a tmvar_name_pairings with
         | None -> raise (Util.Invariant "no free TVars allowed")
-        | Some x -> TMVar x
+        | Some x -> TMVar (loc, x)
       end
-      | Arrow (t1, t2) -> Arrow (rename_tvars_to_tmvars t1, rename_tvars_to_tmvars t2)
-      | Named (c, ts) -> Named (c, List.map rename_tvars_to_tmvars ts)
-      | TMVar x -> TMVar x
-      | Int -> Int
+      | Arrow (loc, t1, t2) -> Arrow (loc, rename_tvars_to_tmvars t1, rename_tvars_to_tmvars t2)
+      | Named (loc, c, ts) -> Named (loc, c, List.map rename_tvars_to_tmvars ts)
+      | TMVar (loc, x) -> TMVar (loc, x)
+      | Int loc -> Int loc
     in
     (s, rename_tvars_to_tmvars tp)
 
@@ -90,22 +95,29 @@ let instantiate_ctor_type (env : infer_env) (s : infer_state) (c : ctor_name) : 
  * converting into TVars those uninstantiated TMVars not appearing in the given
  * list of "outer TMVars" into TVars.
  *)
-let generalize (outer : tmvar_name list) (tp : Type.t) : Type.sc =
+let generalize (outer : (Type.loc * tmvar_name) list) (tp : Type.t) : Type.sc =
   (* The names of all the TMVars to be converted to TVars *)
-  let tmvar_names = List.filter (fun x -> not @@ List.mem x outer) @@ TMVar.all_in tp in
+  let tmvar_locd_names =
+    TMVar.all_in tp |>
+    List.filter (fun (_, x) -> not @@ List.exists (fun (_, y) -> x = y) outer)
+  in
   (* Construct a substitution that eliminates the TMVars into TVars *)
-  let next tmvars x = match TMVar.lookup tmvars x with
+  let next tmvars (loc, x) = match TMVar.lookup tmvars x with
     | `not_found ->
       let prefix, n = TMVar.parse x in
-      TMVar.extend_sub tmvars x ~inst: (Some (TVar (prefix ^ string_of_int n)))
+      TMVar.extend_sub tmvars x ~inst: (Some (TVar (loc, prefix ^ string_of_int n)))
       (* TODO something better than this trash *)
     | `inst t -> tmvars (* in case of duplicates do nothing *)
-    | `uninst -> raise @@ Util.Invariant "wat"
+
+    (* Since we are constructing the substitution right here, and every entry we
+       put in it is instantiated, we have the invariant that `uninst is an
+       impossible case. *)
+    | `uninst -> raise @@ Util.Invariant "every tmvar is instantiated in the substitution we are building"
   in
-  let tmvars = List.fold_left next TMVar.empty_sub tmvar_names in
+  let tmvars = List.fold_left next TMVar.empty_sub tmvar_locd_names in
   (* The substitution is in fact a renaming of TMVars to TVars and contains no
      uninstantiated vars, so the following partial matching is justified. *)
-  let binders = List.map (fun (_, Some (Type.TVar x)) -> x) @@ TMVar.list_of_sub tmvars in
+  let binders = List.map (fun (_, Some (Type.TVar (_, x))) -> x) @@ TMVar.list_of_sub tmvars in
   (binders, TMVar.apply_sub tmvars tp)
 
 type unify_kind = [
@@ -138,14 +150,17 @@ module TypeError = struct
   type term_stack = term_stack_entry list
 
   type report = {
-    (* The stack of (sub)terms that leads to the error. *)
+    (** The stack of (sub)terms that lead to the error. *)
     term_stack : term_stack;
 
-    (* The actual error encountered. *)
+    (** The actual error encountered. *)
     error : t;
+
+    (** The location where the error occurred. *)
+    loc : Loc.span;
   }
 
-  let report (error : t) = { error; term_stack = [] }
+  let report loc (error : t) = { loc; error; term_stack = [] }
 end
 
 type 'a result = (TypeError.report, 'a) Result.t
@@ -156,86 +171,110 @@ let push e r = Result.map_error TypeError.(fun r -> { r with term_stack = e :: r
 let push_scoped env e r = push (Ctx.to_scope env.ctx, e) r
 
 (* Interprets a unification result as a typechecking result. *)
-let unify (k : unify_kind) : 'a Unify.result -> 'a result =
-  let f : Unify.unify_error -> TypeError.t = function 
+let unify loc (k : unify_kind) : 'a Unify.result -> 'a result =
+  let f : Unify.unify_error -> TypeError.t = function
     | `occurs_check (x, tp) -> `infinite_type (x, tp)
     | `mismatch (t1, t2) -> `mismatch (k, t1, t2)
   in
-  Result.map_error (fun err -> TypeError.report @@ f err)
+  Result.map_error (fun err -> TypeError.report loc @@ f err)
 
 let dprintf env = Format.fprintf env.ppf
 
 let rec infer_tm (env : infer_env) (s : infer_state) : Term.t -> (infer_state * Type.t) result =
   let open Term in let open Type in
   function
-  | Num _ -> Result.ok (s, Int)
-  | Var i -> begin match lookup_var env.ctx i with
-    | None -> raise (Util.Invariant "unbound variable")
+  | Num (loc, _) -> Result.ok (s, Int (`inferred loc))
+  | Var (_, i) -> begin match lookup_var env.ctx i with
+    | None -> raise (Util.Invariant "scopecheck: all variables are bound")
     | Some (_, tpsc) -> Result.ok (instantiate s tpsc)
   end
-  | Ref c -> begin match Signature.lookup_tm c env.sg with
-    | None -> raise (Util.Invariant "unbound reference")
+  | Ref (_, c) -> begin match Signature.lookup_tm c env.sg with
+    | None -> raise (Util.Invariant "scopecheck: all references are resolved")
     | Some ({ typ }) -> Result.ok (instantiate s typ)
   end
-  | Const (c, spine) ->
+  | Const (loc, c, spine) ->
     let s, ctor_tp = instantiate_ctor_type env s c in
-    Result.bind (infer_ctor_from_spine env s spine) @@ fun (s, inferred_ctor_tp, result_tp) ->
+    Result.bind (infer_ctor_from_spine loc env s spine) @@ fun (s, inferred_ctor_tp, result_tp) ->
     dprintf env "Unifying constructor type@,";
     let ctor_tp' = TMVar.apply_sub s.tmvars ctor_tp in
     let inferred_ctor_tp' = TMVar.apply_sub s.tmvars inferred_ctor_tp in
-    Result.bind (unify (`ctor_spine (Ctx.to_scope env.ctx, (c, ctor_tp'), (spine, inferred_ctor_tp'))) (Unify.types s.tmvars (ctor_tp, inferred_ctor_tp))) @@ fun tmvars ->
+    Result.bind begin
+      unify loc
+        (`ctor_spine (Ctx.to_scope env.ctx, (c, ctor_tp'), (spine, inferred_ctor_tp')))
+        (Unify.types s.tmvars (ctor_tp, inferred_ctor_tp))
+    end @@ fun tmvars ->
     Result.ok ({ s with tmvars }, result_tp)
-  | Fun (x, e) ->
+  | Fun (loc, (loc_x, x), e) ->
     let s, a = fresh_tmvar s "a" in
-    let tp_a = TMVar a in
+    let tp_a = TMVar (`inferred loc_x, a) in
     let env = extend_ctx env @@ (x, mono tp_a) in
     dprintf env "@[<hv 2>Entering function.@ ";
     Result.bind (push_scoped env e @@ infer_tm env s e) @@ fun (s, tp_b) ->
-    let arr = Arrow (tp_a, tp_b) in
-    dprintf env "@]@[<v 2>Inferred function type@ %a@]@," (Pretty.print_tp 0) (TMVar.apply_sub s.tmvars arr);
+    let arr = Arrow (`inferred loc, tp_a, tp_b) in
+    dprintf env "@]@[<v 2>Inferred function type@ %a@]@," (P.print_tp 0) (TMVar.apply_sub s.tmvars arr);
     Result.ok (s, arr)
-  | App (e1, e2) ->
+  | App (loc, e1, e2) ->
     Result.bind (push_scoped env e1 @@ infer_tm env s e1) @@ fun (s, f_tp) ->
     Result.bind (push_scoped env e2 @@ infer_tm env s e2) @@ fun (s, arg_tp) ->
     let s, x = fresh_tmvar s "a" in
-    let inferred_f_tp = Arrow (arg_tp, TMVar x) in
+    let inferred_f_tp =
+      let loc = loc_of_tm e1 in
+      Arrow (`inferred loc, arg_tp, TMVar (`inferred loc, x))
+    in
     dprintf env "@[<v>@[<v 2>Unify inferred function type@ %a@]@ @[<v 2>with expected function type@ %a@]@]@,"
-      (Pretty.print_tp 0) (TMVar.apply_sub s.tmvars inferred_f_tp)
-      (Pretty.print_tp 0) (TMVar.apply_sub s.tmvars f_tp);
-    Result.bind (unify (`app (Ctx.to_scope env.ctx, e1)) (Unify.types s.tmvars (f_tp, inferred_f_tp))) @@ fun tmvars ->
-    Result.ok ({ s with tmvars }, TMVar x)
-  | Match (e1, cases) ->
+      (P.print_tp 0) (TMVar.apply_sub s.tmvars inferred_f_tp)
+      (P.print_tp 0) (TMVar.apply_sub s.tmvars f_tp);
+    Result.bind begin
+      unify loc
+        (`app (Ctx.to_scope env.ctx, e1))
+        (Unify.types s.tmvars (f_tp, inferred_f_tp))
+    end @@ fun tmvars ->
+    Result.ok ({ s with tmvars }, TMVar (`inferred loc, x))
+  | Match (match_loc, e1, cases) ->
     let open Result in
     bind (push_scoped env e1 @@ infer_tm env s e1) @@ fun (s, scru_tp) ->
+    (* idea: synthesize a fresh tmvar whose type will be the type of all the case bodies
+       then, when we infer the type of a case body, we unify its type with this TMVar.
+       This will arrange that all case body types get unified together.
+       This TMVar is the type of the whole match-expression. *)
     let s, x = fresh_tmvar s "b" in
     let rec go s = function
       | [] -> Result.ok s
-      | Case (pat, body) :: cases ->
-        dprintf env "@[<hv 2>Infer type of pattern@ %a@]@," (Pretty.print_pattern 0) pat;
+      | Case (loc, pat, body) :: cases ->
+        dprintf env "@[<hv 2>Infer type of pattern@ %a@]@," (P.print_pattern 0) pat;
         bind (infer_pat env s pat) @@ fun (env', s, pat_tp) ->
         let scru_tp' = TMVar.apply_sub s.tmvars scru_tp in
         let u_pat = Unify.types s.tmvars (scru_tp, pat_tp) in
-        bind (unify (`scru_pat (Ctx.to_scope env.ctx, (e1, scru_tp'), (pat, pat_tp))) u_pat) @@ fun tmvars ->
+        bind begin
+          unify
+            (loc_of_pattern pat)
+            (`scru_pat (Ctx.to_scope env.ctx, (e1, scru_tp'), (pat, pat_tp)))
+            u_pat
+        end @@ fun tmvars ->
         dprintf env "Inferring body type.@,";
         bind (infer_tm env' { s with tmvars } body) @@ fun (s, body_tp) ->
         let body_tp' = TMVar.apply_sub s.tmvars body_tp in
-        let other_body_tp = TMVar.apply_sub s.tmvars (TMVar x) in
+        let other_body_tp = TMVar.apply_sub s.tmvars (TMVar (`inferred match_loc, x)) in
         dprintf env "@[<hv 2>@[<hv 2>Unifying body types@ %a@]@ @[<hv 2>and@ %a@]@]@,"
-          (Pretty.print_tp 0) body_tp'
-          (Pretty.print_tp 0) other_body_tp;
-        let u_body = Unify.types s.tmvars (TMVar x, body_tp) in
-        bind (unify (`case_body ((Ctx.to_scope env.ctx, body), body_tp', other_body_tp)) u_body) @@ fun tmvars ->
+          (P.print_tp 0) body_tp'
+          (P.print_tp 0) other_body_tp;
+        bind begin
+          unify
+            match_loc
+            (`case_body ((Ctx.to_scope env.ctx, body), body_tp', other_body_tp))
+            (Unify.types s.tmvars (other_body_tp, body_tp'))
+        end @@ fun tmvars ->
         go { s with tmvars } cases
     in
     dprintf env "Processing match cases@,";
     bind (go s cases) @@ fun s ->
     dprintf env "Done processing cases.@,";
-    Result.ok (s, TMVar x)
-  | Let (Rec, x, e1, e2) ->
+    Result.ok (s, TMVar (`inferred match_loc, x))
+  | Let (loc, Rec, (loc_x, x), e1, e2) ->
     let s, b = fresh_tmvar s "b" in
     (* in the env for inferring the type of x = e1, we introduce a binding x : T
     where T = a#n, that is a fresh TMVar.*)
-    let env' = extend_ctx env @@ (x, mono (TMVar b)) in
+    let env' = extend_ctx env @@ (x, mono (TMVar (`inferred loc_x, b))) in
     Result.bind (push_scoped env' e1 @@ infer_tm env' s e1) @@ fun (s, scru_tp) ->
     (* Now let's go back to the original env and normalize the types. *)
     let env = apply_sub_to_ctx s.tmvars env in
@@ -247,7 +286,7 @@ let rec infer_tm (env : infer_env) (s : infer_state) : Term.t -> (infer_state * 
     (* Form a new version of env', but this time using the generalized type of e1 for x. *)
     let env = extend_ctx env (x, tp_sc) in
     push_scoped env e2 @@ infer_tm env s e2
-  | Let (NonRec, x, e1, e2) ->
+  | Let (loc, NonRec, (loc_x, x), e1, e2) ->
     Result.bind (push_scoped env e1 @@ infer_tm env s e1) @@ fun (s, scru_tp) ->
     let env = apply_sub_to_ctx s.tmvars env in
     let scru_tp = TMVar.apply_sub s.tmvars scru_tp in
@@ -263,36 +302,37 @@ let rec infer_tm (env : infer_env) (s : infer_state) : Term.t -> (infer_state * 
  * and each T_i is inferred from the corresponding sp_i
  * and T_r is a fresh TMVar
  *)
-and infer_ctor_from_spine (env : infer_env) (s : infer_state) : Term.spine -> (infer_state * Type.t * Type.t) result =
+and infer_ctor_from_spine loc
+    (env : infer_env) (s : infer_state) : Term.spine -> (infer_state * Type.t * Type.t) result =
   function
   | [] ->
     let s, x = fresh_tmvar s "s" in
-    Result.ok @@ Type.(s, TMVar x, TMVar x)
+    Result.ok @@ Type.(s, TMVar (`inferred loc, x), TMVar (`inferred loc, x))
   | e :: es ->
     Result.bind (push_scoped env e @@ infer_tm env s e) @@ fun (s, arg_tp) ->
-    Result.bind (infer_ctor_from_spine env s es) @@ fun (s, f_tp, result_tp) ->
-    Result.ok (s, Type.Arrow (arg_tp, f_tp), result_tp)
+    Result.bind (infer_ctor_from_spine loc env s es) @@ fun (s, f_tp, result_tp) ->
+    Result.ok (s, Type.Arrow (`inferred (Loc.Span.join loc (Term.loc_of_tm e)), arg_tp, f_tp), result_tp)
 
 (* Infers the type of a pattern. The pattern type must then be unified with the scrutinee type.
  * Extends the given context with bindings for the variables defined in the pattern.
  *)
 and infer_pat (env : infer_env) (s : infer_state) : Term.pattern -> (infer_env * infer_state * Type.t) result =
   function
-  | WildcardPattern ->
+  | WildcardPattern loc ->
     let s, p = fresh_tmvar s "p" in
-    Result.ok (env, s, Type.TMVar p)
-  | VariablePattern x ->
+    Result.ok (env, s, Type.TMVar (`inferred loc, p))
+  | VariablePattern (loc, x) ->
     let s, p = fresh_tmvar s "p" in
-    Result.ok Type.(extend_ctx env (x, mono @@ TMVar p), s, TMVar p)
-  | NumPattern _ ->
-    Result.ok (env, s, Type.Int)
-  | ConstPattern (c, pat_spine) ->
+    Result.ok Type.(extend_ctx env (x, mono @@ TMVar (`inferred loc, p)), s, TMVar (`inferred loc, p))
+  | NumPattern (loc, _) ->
+    Result.ok (env, s, Type.Int (`inferred loc))
+  | ConstPattern (loc, c, pat_spine) ->
     let s, ctor_tp = instantiate_ctor_type env s c in
-    Result.bind (infer_ctor_from_pat_spine env s pat_spine) @@ fun (env, s, inferred_ctor_tp, result_tp) ->
+    Result.bind (infer_ctor_from_pat_spine loc env s pat_spine) @@ fun (env, s, inferred_ctor_tp, result_tp) ->
     let ctor_tp' = TMVar.apply_sub s.tmvars ctor_tp in
     let inferred_ctor_tp' = TMVar.apply_sub s.tmvars inferred_ctor_tp in
     let u = Unify.types s.tmvars (ctor_tp, inferred_ctor_tp) in
-    Result.bind (unify (`ctor_pat_spine ((c, ctor_tp'), (pat_spine, inferred_ctor_tp'))) u) @@ fun tmvars ->
+    Result.bind (unify loc (`ctor_pat_spine ((c, ctor_tp'), (pat_spine, inferred_ctor_tp'))) u) @@ fun tmvars ->
     Result.ok (env, { s with tmvars }, result_tp)
 
 (* Given a spine t1, ..., tn, constructs the type of a constructor that would accept this spine.
@@ -301,15 +341,16 @@ and infer_pat (env : infer_env) (s : infer_state) : Term.pattern -> (infer_env *
  * That makes sense because it's the constructor that decides what the type being constructed in.
  * The same spine can be used on various different constructors to make different types.
  *)
-and infer_ctor_from_pat_spine (env : infer_env) (s : infer_state) : Term.pattern list -> (infer_env * infer_state * Type.t * Type.t) result =
+and infer_ctor_from_pat_spine loc
+    (env : infer_env) (s : infer_state) : Term.pattern list -> (infer_env * infer_state * Type.t * Type.t) result =
   function
   | [] ->
     let s, x = fresh_tmvar s "s" in
-    Result.ok Type.(env, s, TMVar x, TMVar x)
+    Result.ok Type.(env, s, TMVar (`inferred loc, x), TMVar (`inferred loc, x))
   | pat :: pat_spine ->
     Result.bind (infer_pat env s pat) @@ fun (env, s, arg_tp) ->
-    Result.bind (infer_ctor_from_pat_spine env s pat_spine) @@ fun (env, s, f_tp, result_tp) ->
-    Result.ok (env, s, Type.Arrow (arg_tp, f_tp), result_tp)
+    Result.bind (infer_ctor_from_pat_spine loc env s pat_spine) @@ fun (env, s, f_tp, result_tp) ->
+    Result.ok (env, s, Type.Arrow (`inferred (Loc.Span.join loc (Term.loc_of_pattern pat)), arg_tp, f_tp), result_tp)
 
 let make_env ppf (sg : Term.t Signature.t) : infer_env =
   { sg; ctx = Ctx.empty; ppf }
@@ -318,7 +359,7 @@ let check_decl ppf (sg : Term.t Signature.t) : Term.t Decl.t -> Term.t Signature
   | TpDecl d ->
     Format.fprintf ppf "@[Define type %s@]@," d.name;
     Result.ok @@ Signature.declare_tp sg d
-  | TmDecl ({ recursive; typ; name; body } as d) ->
+  | TmDecl ({ recursive; typ; name; body; loc } as d) ->
     Format.fprintf ppf "@[<v 2>Typechecking declaration for %s@," name;
     (* associate a fresh type variable to the definition, so that when we look
        up the type of the function for recursion, we end up unifying
@@ -327,7 +368,7 @@ let check_decl ppf (sg : Term.t Signature.t) : Term.t Decl.t -> Term.t Signature
       let open Type in
       if recursive then
         let tmvars, x = TMVar.fresh TMVar.empty_sub "a" in
-        (tmvars, Signature.declare_tm sg { d with typ = mono @@ TMVar x })
+        (tmvars, Signature.declare_tm sg { d with typ = mono @@ TMVar (`inferred loc, x) })
       else
         (TMVar.empty_sub, sg)
     in
@@ -340,17 +381,17 @@ let check_decl ppf (sg : Term.t Signature.t) : Term.t Decl.t -> Term.t Signature
         (* Unify the user-supplied type as expected type *)
         let s, user_tp = instantiate s typ in
         Format.fprintf ppf "@[<hv 2>@[<hv 2>Unifying user type@ %a@]@ @[<hv 2>with inferred type@ %a@]@]@,"
-        (Pretty.print_tp 0) user_tp
-        (Pretty.print_tp 0) (TMVar.apply_sub s.tmvars tp);
-        unify (`decl (name, user_tp, tp)) (Unify.types s.tmvars (user_tp, tp)) $ fun tmvars ->
+        (P.print_tp 0) user_tp
+        (P.print_tp 0) (TMVar.apply_sub s.tmvars tp);
+        unify loc (`decl (name, user_tp, tp)) (Unify.types s.tmvars (user_tp, tp)) $ fun tmvars ->
         (* by unification, [tmvars]typ = [tmvars]tp *)
         Format.fprintf ppf "@[<v>@[<v 2>Applying substitution:@,%a@]@,@[<v 2>to user type:@,%a@]@]@,"
           TMVar.print_sub tmvars
-          (Pretty.print_tp 0) user_tp;
+          (P.print_tp 0) user_tp;
         let tp = TMVar.apply_sub tmvars user_tp in
         Format.fprintf ppf "Generalizing...@,";
         let tpsc = generalize [] tp in
-        Format.fprintf ppf "@[<hv 2>Generalized type is@ %a@]@," (Pretty.print_tp_sc 0) tpsc;
+        Format.fprintf ppf "@[<hv 2>Generalized type is@ %a@]@," (P.print_tp_sc 0) tpsc;
         Result.ok @@ Signature.declare_tm sg { d with typ = tpsc }
     in
     Format.fprintf ppf "@]@,";

@@ -44,6 +44,12 @@ module External = struct
       | Arrow of Loc.span * t * t
       | TVar of Loc.span * tvar_name
       | Named of Loc.span * tp_name * t list
+
+    let loc_of_tp = function
+      | Int loc -> loc
+      | Arrow (loc, _, _) -> loc
+      | TVar (loc, _) -> loc
+      | Named (loc, _, _) -> loc
   end
 
   module Term = struct
@@ -54,6 +60,12 @@ module External = struct
       | NumPattern of Loc.span * int
       | VariablePattern of Loc.span * var_name
       | WildcardPattern of Loc.span
+
+    let loc_of_pattern = function
+      | ConstPattern (loc, _, _) -> loc
+      | NumPattern (loc, _) -> loc
+      | VariablePattern (loc, _) -> loc
+      | WildcardPattern loc -> loc
 
     type t =
       | Num of loc * int

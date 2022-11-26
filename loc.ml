@@ -48,7 +48,10 @@ module Span = struct
 
   (* Joins two spans into a single one by taking the start of the first and the
   stop of the second. *)
-  let join { start; } { stop; } = { start; stop }
+  let join s1 s2 = match () with
+    | _ when is_fake s1 -> s2
+    | _ when is_fake s2 -> s1
+    | _ -> { start = s1.start; stop = s2.stop }
 end
 
 type span = Span.t

@@ -42,22 +42,23 @@ module Env = struct
   }
 end
 
+type parser_label =
+  | Anon
+  | Label of string
+  | OneOf of parser_label list
+
 module ParseError = struct
   type content =
     | WrongLiteral of { expected : string; actual : string }
     | Unsatisfied
     | NoMoreChoices
+    | NotFollowedBy of parser_label
 
   (** A fatal error occurs when a parser fails after having consumed input. *)
   type t = Loc.t * [ `fatal | `non_fatal ] * content
 
   let make l fatality content = (l, fatality, content)
 end
-
-type parser_label =
-  | Anon
-  | Label of string
-  | OneOf of parser_label list
 
 type 'a t = {
   label : parser_label;
@@ -166,16 +167,16 @@ let sep_by0 sep p =
 (** Runs `p1'. If it fails without consuming input, runs `p2'.
     If `p1' fails while consuming input, `p2' is not run.
 *)
-let alt (p1 : 'a t) (p2 : 'a t susp) =
+let alt (p1 : 'a t susp) (p2 : 'a t susp) : 'a t =
   bind here @@ fun Loc.({ offset }) ->
-  bind (handle p1) @@ function
+  bind (handle @@ force p1) @@ function
   | Result.Ok x -> pure x
   | Result.Error (l, _, _) when Loc.Span.(l.offset) = offset -> p2 ()
   | Result.Error (_, `non_fatal, _) -> p2 ()
   | Result.Error (l, fatality, e) -> fail_at l e
 
 let choice (ps : 'a t susp list) : 'a t =
-  List.fold_right (fun p acc -> alt (force p) @@ delay acc) ps (fail @@ ParseError.NoMoreChoices)
+  force @@ List.fold_right (fun p acc -> delay @@ alt p acc) ps (fun () -> fail @@ ParseError.NoMoreChoices)
 
 (* Look at the character at the parser's current position. *)
 let peek : char t = {
@@ -236,7 +237,7 @@ let whitespace = satisfy is_whitespace
 let digit = satisfy is_digit |> map (fun x -> String.make 1 x |> int_of_string)
 let lparen = string "("
 let rparen = string ")"
-let number =
+let raw_number =
   some digit |>
   map (fun ds -> List.fold_right (fun d (acc, pow10) -> (acc + d * pow10, pow10 * 10)) ds (0, 1)) |>
   map fst
@@ -259,10 +260,26 @@ let lword : string t =
 let lexeme (p : 'a t) =
   p <& many whitespace
 
+(* `p1 |> not_followed_by p2` parses p1 provided that parsing p2 fails after it. *)
+let not_followed_by (pr : 'a t) (pl : 'b t) : 'b t =
+  bind pl @@ fun x ->
+  bind (optional pr) @@ function
+  | None -> pure x
+  | Some _ -> fail @@ ParseError.NotFollowedBy pr.label
+
+let number = lexeme (span raw_number)
 let uident = lexeme (span uword)
 let lident = lexeme (span lword)
 
 let arrow = lexeme (string "->")
+
+(** Parses a literal string ensuring that that string isn't a prefix of a bigger word. *)
+let keyword s = lexeme (span @@ string s) |> not_followed_by alphanumeric
+
+let kw_let = keyword "let"
+let kw_fun = keyword "fun"
+let kw_in = keyword "in"
+let kw_match = keyword "match"
 
 let between start stop p =
   start &> p <& stop
@@ -294,13 +311,43 @@ let rec typ () : Type.t t =
     pure Type.(Arrow (Loc.Span.join (loc_of_tp t) (loc_of_tp t'), t, t'))
 
 let rec pattern () : Term.pattern t =
-  let wildcard () = lexeme (span @@ string "_") |> map (fun (loc, _) -> Term.WildcardPattern loc) in
-  let variable () = lident |> map (fun (loc, x) -> Term.VariablePattern (loc, x)) in
-  let num () = lexeme (span number) |> map (fun (loc, n) -> Term.NumPattern (loc, n)) in
+  let wildcard () =
+    label "wildcard pattern" @@
+    lexeme (span @@ string "_") |> map (fun (loc, _) -> Term.WildcardPattern loc)
+  in
+  let variable () =
+    label "variable pattern" @@
+    lident |> map (fun (loc, x) -> Term.VariablePattern (loc, x))
+  in
+  let num () =
+    label "integer literal pattern" @@
+    number |> map (fun (loc, n) -> Term.NumPattern (loc, n))
+  in
   let const () =
+    label "constructor pattern" @@
     bind uident @@ fun (loc, ctor_name) ->
     bind (many @@ force pattern) @@ fun ps ->
     let loc = List.fold_left (fun acc p -> Loc.Span.join acc @@ Term.loc_of_pattern p) loc ps in
     pure Term.(ConstPattern (loc, ctor_name, ps))
   in
-  choice [wildcard; variable; num; const]
+  choice [wildcard; variable; num; const; fun () -> parenthesized (force pattern)]
+
+let rec term () : Term.t t =
+  let num () =
+    label "integer literal" @@
+    lexeme number |> map (fun (loc, n) -> Term.Num (loc, n))
+  in
+  let variable () =
+    label "variable" @@
+    lident |> map (fun (loc, x) -> Term.Var (loc, x))
+  in
+  let lam () =
+    label "function literal" @@
+    bind here @@ fun start ->
+    bind kw_fun @@ fun _ ->
+    bind lident @@ fun (loc_x, x) ->
+    bind (force term) @@ fun body ->
+    let loc = Loc.Span.(make start (Term.loc_of_tm body).stop) in
+    pure @@ Term.Fun (loc, (loc_x, x), body)
+  in
+  failwith "todo"

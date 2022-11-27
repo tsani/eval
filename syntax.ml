@@ -82,6 +82,15 @@ module External = struct
 
      and spine = t list
      and case = Case of Loc.span * pattern * t
+
+     let loc_of_tm = function
+       | Num (loc, _) -> loc
+       | Var (loc, _) -> loc
+       | Fun (loc, _, _) -> loc
+       | App (loc, _, _) -> loc
+       | Let (loc, _, _, _, _) -> loc
+       | Match (loc, _, _) -> loc
+       | Const (loc, _, _) -> loc
   end
 
   module Decl = struct

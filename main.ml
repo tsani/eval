@@ -1,9 +1,6 @@
-open Syntax
-open Internal
-open Eval
-
 module P = Pretty.Internal
 
+(*
 let program =
   let open Type in let open Term in let open Decl in let open Sugar in
   let loc = Loc.Span.fake in [
@@ -347,6 +344,7 @@ let program =
         );
     };
   ]
+   *)
 
 open Format
 
@@ -407,15 +405,30 @@ let print_term_stack ppf term_stack =
 let print_error_report ppf ({ error; term_stack } : Typecheck.TypeError.report): unit =
   fprintf ppf "@[<v>%a@,%a@]" print_type_error error print_term_stack term_stack
 
-let sg =
-  let ppf = Format.err_formatter in
-  fprintf ppf "@[<v>";
-  let open Result in match Typecheck.check_program ppf Signature.empty program with
-  | Error report ->
-    fprintf ppf "@[<v 2>Type error.@,%a@]@]@." print_error_report report;
-  | Ok _ ->
-    fprintf ppf "Typechecking succeeded!@,@]@.";
-    let open Result in
-    match eval_program (State.empty Format.std_formatter) program with
-    | Error e -> fprintf ppf "@[<v 2>Runtime error.@,%a@]@." Eval.RuntimeError.print e
-    | Ok _ -> fprintf ppf "Evaluation finished.@."
+let read_file filename =
+  let h = open_in_bin filename in
+  let s = really_input_string h (in_channel_length h) in
+  close_in h;
+  s
+
+let main () =
+  let filename = Array.get Sys.argv 1 in
+  let input = read_file filename in
+  let epf = Format.err_formatter in
+  let ppf = Format.std_formatter in
+  match Parser.(parse_only program) filename input with
+  | Result.Error e -> fprintf epf "Parse error."
+  | Result.Ok program -> fprintf ppf "Parse succeeded.";
+    match Scopecheck.check_program [] [] [] program with
+    | Result.Error e -> fprintf epf "Scopecheck error."
+    | Result.Ok program ->
+      match Typecheck.check_program epf Syntax.Internal.Signature.empty program with
+      | Result.Error report ->
+        fprintf epf "@[<v 2>Type error.@,%a@]@]@." print_error_report report;
+      | Result.Ok _ ->
+        fprintf ppf "Typechecking succeeded!@,@]@.";
+        match Eval.(program (State.empty Format.std_formatter)) program with
+        | Result.Error e -> fprintf ppf "@[<v 2>Runtime error.@,%a@]@." Eval.RuntimeError.print e
+        | Result.Ok _ -> fprintf ppf "Evaluation finished.@."
+
+let _ = main ()

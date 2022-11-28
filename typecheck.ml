@@ -190,7 +190,9 @@ let rec infer_tm (env : infer_env) (s : infer_state) : Term.t -> (infer_state * 
   end
   | Ref (_, c) -> begin match Signature.lookup_tm c env.sg with
     | None -> raise (Util.Invariant "scopecheck: all references are resolved")
-    | Some ({ typ }) -> Result.ok (instantiate s typ)
+    | Some ({ typ }) -> match typ with
+      | None -> Util.invariant "every ref's type is known"
+      | Some typ -> Result.ok (instantiate s typ)
   end
   | Const (loc, c, spine) ->
     let s, ctor_tp = instantiate_ctor_type env s c in
@@ -368,31 +370,40 @@ let check_decl ppf (sg : Term.t Signature.t) : Term.t Decl.t -> Term.t Signature
       let open Type in
       if recursive then
         let tmvars, x = TMVar.fresh TMVar.empty_sub "a" in
-        (tmvars, Signature.declare_tm sg { d with typ = mono @@ TMVar (`inferred loc, x) })
+        (tmvars, Signature.declare_tm sg { d with typ = Some (mono @@ TMVar (`inferred loc, x)) })
       else
         (TMVar.empty_sub, sg)
     in
     let sg' = match body with
       | None -> Result.ok @@ sg
       | Some body ->
-        let open Result.Syntax in
         Format.fprintf ppf "Inferring body of declaration for %s@," name;
-        infer_tm (make_env ppf sg) { tmvars } body $ fun (s, tp) ->
+        Result.bind (infer_tm (make_env ppf sg) { tmvars } body) @@ fun (s, tp) ->
         (* Unify the user-supplied type as expected type *)
-        let s, user_tp = instantiate s typ in
-        Format.fprintf ppf "@[<hv 2>@[<hv 2>Unifying user type@ %a@]@ @[<hv 2>with inferred type@ %a@]@]@,"
-        (P.print_tp 0) user_tp
-        (P.print_tp 0) (TMVar.apply_sub s.tmvars tp);
-        unify loc (`decl (name, user_tp, tp)) (Unify.types s.tmvars (user_tp, tp)) $ fun tmvars ->
-        (* by unification, [tmvars]typ = [tmvars]tp *)
-        Format.fprintf ppf "@[<v>@[<v 2>Applying substitution:@,%a@]@,@[<v 2>to user type:@,%a@]@]@,"
-          TMVar.print_sub tmvars
-          (P.print_tp 0) user_tp;
-        let tp = TMVar.apply_sub tmvars user_tp in
-        Format.fprintf ppf "Generalizing...@,";
-        let tpsc = generalize [] tp in
-        Format.fprintf ppf "@[<hv 2>Generalized type is@ %a@]@," (P.print_tp_sc 0) tpsc;
-        Result.ok @@ Signature.declare_tm sg { d with typ = tpsc }
+        Result.bind begin match typ with
+          | None -> (* no user-supplied type *)
+            let tp = TMVar.apply_sub s.tmvars tp in
+            Format.fprintf ppf "@[<hv>Inferred %s :@ @[%a@]@]" name (P.print_tp 0) tp;
+            let tpsc = generalize [] tp in
+            Format.fprintf ppf "@[<hv 2>Generalized type is@ %a@]@," (P.print_tp_sc 0) tpsc;
+            Result.ok tpsc
+          | Some typ ->
+            let s, user_tp = instantiate s typ in
+            Format.fprintf ppf "@[<hv 2>@[<hv 2>Unifying user type@ %a@]@ @[<hv 2>with inferred type@ %a@]@]@,"
+              (P.print_tp 0) user_tp
+              (P.print_tp 0) (TMVar.apply_sub s.tmvars tp);
+            Result.bind (unify loc (`decl (name, user_tp, tp)) (Unify.types s.tmvars (user_tp, tp))) @@ fun tmvars ->
+            (* by unification, [tmvars]typ = [tmvars]tp *)
+            Format.fprintf ppf "@[<v>@[<v 2>Applying substitution:@,%a@]@,@[<v 2>to user type:@,%a@]@]@,"
+              TMVar.print_sub tmvars
+              (P.print_tp 0) user_tp;
+            let tp = TMVar.apply_sub tmvars user_tp in
+            Format.fprintf ppf "Generalizing...@,";
+            let tpsc = generalize [] tp in
+            Format.fprintf ppf "@[<hv 2>Generalized type is@ %a@]@," (P.print_tp_sc 0) tpsc;
+            Result.ok tpsc
+        end @@ fun tpsc ->
+        Result.ok @@ Signature.declare_tm sg { d with typ = Some tpsc }
     in
     Format.fprintf ppf "@]@,";
     sg'

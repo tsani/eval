@@ -14,7 +14,7 @@ let is_digit c =
   Char.code '0' <= i && i <= Char.code '9'
 
 let is_symbol c =
-  List.mem c ['!'; '@'; '#'; '$'; '%'; '^'; '&'; '*'; '<'; '>'; '|'; '/'; '\\'; '?'; '-']
+  List.mem c ['!'; '@'; '#'; '$'; '%'; '^'; '&'; '*'; '<'; '>'; '|'; '/'; '\\'; '?'; '-'; ':']
 
 type 'a susp = unit -> 'a
 let delay x = fun () -> x
@@ -28,7 +28,7 @@ module State = struct
   let map_loc (f : Loc.t -> Loc.t) (s : t) : t =
     { s with here = f s.here }
 
-  let initial filename = {
+  let make filename = {
     here = Loc.initial filename;
   }
 end
@@ -56,6 +56,7 @@ module ParseError = struct
     | Unsatisfied
     | NoMoreChoices
     | NotFollowedBy of parser_label
+    | Expected of parser_label
 
   (** A fatal error occurs when a parser fails after having consumed input. *)
   type t = Loc.t * [ `fatal | `non_fatal ] * content
@@ -68,6 +69,16 @@ type 'a t = {
   run : 'r. Env.t -> State.t -> (ParseError.t -> 'r) -> (State.t -> 'a -> 'r) -> 'r;
 }
 
+let eof : unit t = {
+  label = Label "end of input";
+  run = fun r s fail return ->
+    let n = String.length @@ r.Env.input in
+    if s.State.here.Loc.offset = n then
+      return s ()
+    else
+      fail @@ ParseError.(make s.State.here `non_fatal @@ Expected (Label "end of input"))
+}
+
 (** Labels the given parser exactly. *)
 let label' label p = {
   p with label
@@ -75,6 +86,12 @@ let label' label p = {
 
 (** Labels the given parser with a string. *)
 let label label p = label' (Label label) p
+
+(** Obtains the parser environment. *)
+let env : Env.t t = {
+  label = Anon;
+  run = fun r s fail return -> return s r
+}
 
 (** Obtains the current parser position. *)
 let here : Loc.t t = {
@@ -107,11 +124,15 @@ let bind (p : 'a t) (k : 'a -> 'b t) : 'b t = {
   run = fun r s fail return -> p.run r s fail @@ fun s x -> (k x).run r s fail return
 }
 
-(** Causes a parser error at the given location. *)
-let fail_at (loc : Loc.t) (e : ParseError.content) : 'a t = {
+let fail_raw (e : ParseError.t) : 'a t = {
   label = Anon;
-  run = fun r s fail return -> fail @@ ParseError.make loc (if r.backtrack then `non_fatal else `fatal) e
+  run = fun r s fail return -> fail e
 }
+
+(** Causes a parser error at the given location. *)
+let fail_at (loc : Loc.t) (e : ParseError.content) : 'a t =
+  bind env @@ fun r ->
+  fail_raw @@ ParseError.make loc (if r.Env.backtrack then `non_fatal else `fatal) e
 
 (* Causes a parser error at the current location. *)
 let fail (e : ParseError.content) : 'a t =
@@ -136,6 +157,7 @@ let map (f : 'a -> 'b) (p : 'a t) : 'b t = {
 let optional (p : 'a t) : 'a option t =
   bind (handle p) @@ function
   | Result.Error (_, `non_fatal, _) -> pure None
+  | Result.Error e -> fail_raw e
   | Result.Ok x -> pure (Some x)
 
 (** `many p' parses `p' zero or more times.
@@ -288,6 +310,7 @@ let symbol s = lexeme (span @@ string s) |> not_followed_by symbol
 let sym_arrow = symbol "->"
 let sym_pipe = symbol "|"
 let sym_eq = symbol "="
+let sym_colon = symbol ":"
 
 (** Parses a literal string ensuring that that string isn't a prefix of a bigger word. *)
 let keyword s = lexeme (span @@ string s) |> not_followed_by alphanumeric
@@ -298,6 +321,7 @@ let kw_in = keyword "in"
 let kw_match = keyword "match"
 let kw_rec = keyword "rec"
 let kw_with = keyword "with"
+let kw_def = keyword "def"
 
 let between start stop p =
   start &> p <& stop
@@ -424,3 +448,30 @@ let rec term () : Term.t t =
   bind (optional @@ force term) @@ function
   | None -> pure e
   | Some e' -> pure Term.(App (Loc.Span.join (loc_of_tm e) (loc_of_tm e'), e, e'))
+
+let tm_decl : Decl.tm t =
+  bind kw_def @@ fun (loc_def, _) ->
+  bind (optional kw_rec) @@ fun rec_flag ->
+  bind lident @@ fun (loc_name, name) ->
+  bind (optional (sym_colon &> force typ)) @@ fun typ ->
+  bind sym_eq @@ fun _ ->
+  bind (force term) @@ fun body ->
+  pure @@ Decl.({
+      name;
+      typ;
+      recursive = not (rec_flag = None);
+      body;
+      loc = Loc.Span.join loc_def @@ Term.loc_of_tm body
+    })
+
+let decl : Decl.t t =
+  tm_decl |> map (fun d -> Decl.TmDecl d)
+  (* TODO add type declaractions *)
+
+let program = many decl
+
+let parse p filename input = p.run (Env.make input) (State.make filename)
+    (fun e -> Result.error e)
+    (fun _ x -> Result.ok x)
+
+let parse_only p = parse (p <& eof)

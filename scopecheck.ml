@@ -175,11 +175,16 @@ let check_decl
     Result.ok @@ I.Decl.(TpDecl { name; tvar_binders; constructors; loc })
 
   | TmDecl { loc; name; typ; recursive; body } ->
-    Result.bind (check_tp (to_lookup tps) (fun _ -> true) typ) @@
-    let binders = quantify [] typ in fun typ ->
+    Result.bind begin
+      match typ with
+      | Some typ ->
+        let binders = quantify [] typ in
+        check_tp (to_lookup tps) (fun _ -> true) typ |> Result.map (fun x -> Some (binders, x))
+      | None -> Result.ok None
+    end @@ fun typ ->
     let tms' = if recursive then name :: tms else tms in
     Result.bind (check_tm (to_lookup ctors) (to_member tms') Scope.empty body) @@ fun body ->
-    Result.ok @@ I.Decl.(TmDecl { loc; name; typ = (binders, typ); recursive; body = Some body })
+    Result.ok @@ I.Decl.(TmDecl { loc; name; typ; recursive; body = Some body })
 
 let rec check_program (tps : (string * int) list) (ctors : (string * int) list) (tms : string list) : E.Decl.program -> I.Decl.program result =
   function

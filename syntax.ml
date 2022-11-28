@@ -99,7 +99,7 @@ module External = struct
     (** A declaration for a term. *)
     type tm = {
       name : tm_name;
-      typ : Type.t;
+      typ : Type.t option;
       recursive : bool;
       body : Term.t;
       loc : Loc.span;
@@ -308,7 +308,7 @@ module Internal = struct
   module Decl = struct
     type 'a tm = {
       name : tm_name;
-      typ : Type.sc;
+      typ : Type.sc option;
       recursive : bool;
       (* ^ whether the definition is recursive *)
       body : 'a option;

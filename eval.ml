@@ -156,7 +156,7 @@ let eval_decl (s : State.t) (d : Term.t Decl.t) : State.t = let open Decl in mat
     end;
     s |> State.modify_signature (Signature.extend_tms name { d with body = Some v })
 
-let eval_program initial_state program : (RuntimeError.t, State.t) Result.t =
+let program initial_state program : (RuntimeError.t, State.t) Result.t =
   let open RuntimeError in
   debug_print initial_state "@[<v>";
   let result = try Result.ok (List.fold_left eval_decl initial_state program) with

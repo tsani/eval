@@ -91,6 +91,8 @@ module External = struct
        | Let (loc, _, _, _, _) -> loc
        | Match (loc, _, _) -> loc
        | Const (loc, _, _) -> loc
+
+     let case_body (Case (_, _, body)) = body
   end
 
   module Decl = struct

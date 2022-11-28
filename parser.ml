@@ -13,6 +13,9 @@ let is_digit c =
   let i = Char.code c in
   Char.code '0' <= i && i <= Char.code '9'
 
+let is_symbol c =
+  List.mem c ['!'; '@'; '#'; '$'; '%'; '^'; '&'; '*'; '<'; '>'; '|'; '/'; '\\'; '?'; '-']
+
 type 'a susp = unit -> 'a
 let delay x = fun () -> x
 let force f = f ()
@@ -212,6 +215,11 @@ let span (p : 'a t) : (Loc.Span.t * 'a) t =
   bind here @@ fun stop ->
   pure (Loc.Span.make start stop, x)
 
+(** Parses the character given exactly. *)
+let char (c : char) : char t =
+  label ("`" ^ String.make 1 c ^ "' character") @@
+  satisfy (fun x -> x = c)
+
 (* Parses the string given exactly.
    This is done efficiently by simply extracting a substring from the input,
    versus checking one character at a time using `satisfy'.
@@ -225,14 +233,24 @@ let string (str : string) : string t =
       if str = from_input then return (State.map_loc (Loc.bump len) s) str else
         fail @@ ParseError.(make s.State.here `non_fatal @@ WrongLiteral { expected = str; actual = from_input })
   }
-(* ***** Simple syntax parsers ***** *)
+
+(* `p1 |> not_followed_by p2` parses p1 provided that parsing p2 fails after it. *)
+let not_followed_by (pr : 'a t) (pl : 'b t) : 'b t =
+  bind pl @@ fun x ->
+  bind (optional pr) @@ function
+  | None -> pure x
+  | Some _ -> fail @@ ParseError.NotFollowedBy pr.label
+
+(* ***** Simple token parsers ***** *)
 
 let both f g x = f x && g x
 let either f g x = f x || g x
+let all fs = List.fold_right both fs (fun _ -> true)
+let any fs = List.fold_right either fs (fun _ -> false)
 let letter = satisfy is_letter
 let lchar = satisfy (both is_letter is_lowercase)
 let uchar = satisfy (both is_letter is_uppercase)
-let alphanumeric = satisfy (either is_letter is_digit)
+let alphanumeric = satisfy (any [is_letter; is_digit; is_symbol])
 let whitespace = satisfy is_whitespace
 let digit = satisfy is_digit |> map (fun x -> String.make 1 x |> int_of_string)
 let lparen = string "("
@@ -241,6 +259,7 @@ let raw_number =
   some digit |>
   map (fun ds -> List.fold_right (fun d (acc, pow10) -> (acc + d * pow10, pow10 * 10)) ds (0, 1)) |>
   map fst
+let symbol = satisfy is_symbol
 
 (* Parses a sequence of alphanumeric characters beginning with an uppercase letter. *)
 let uword : string t =
@@ -260,18 +279,15 @@ let lword : string t =
 let lexeme (p : 'a t) =
   p <& many whitespace
 
-(* `p1 |> not_followed_by p2` parses p1 provided that parsing p2 fails after it. *)
-let not_followed_by (pr : 'a t) (pl : 'b t) : 'b t =
-  bind pl @@ fun x ->
-  bind (optional pr) @@ function
-  | None -> pure x
-  | Some _ -> fail @@ ParseError.NotFollowedBy pr.label
-
 let number = lexeme (span raw_number)
 let uident = lexeme (span uword)
 let lident = lexeme (span lword)
 
-let arrow = lexeme (string "->")
+(** Parses a literal string ensuring that it isn't isn't a prefix of a bigger symbol. *)
+let symbol s = lexeme (span @@ string s) |> not_followed_by symbol
+let sym_arrow = symbol "->"
+let sym_pipe = symbol "|"
+let sym_eq = symbol "="
 
 (** Parses a literal string ensuring that that string isn't a prefix of a bigger word. *)
 let keyword s = lexeme (span @@ string s) |> not_followed_by alphanumeric
@@ -280,6 +296,8 @@ let kw_let = keyword "let"
 let kw_fun = keyword "fun"
 let kw_in = keyword "in"
 let kw_match = keyword "match"
+let kw_rec = keyword "rec"
+let kw_with = keyword "with"
 
 let between start stop p =
   start &> p <& stop
@@ -304,7 +322,7 @@ let rec typ () : Type.t t =
   in
   let atomic = label "atomic type" @@ choice [named; tvar] in
   bind atomic @@ fun t ->
-  bind (optional arrow) @@ function
+  bind (optional sym_arrow) @@ function
   | None -> pure t
   | Some _ ->
     bind (force typ) @@ fun t' ->
@@ -332,6 +350,11 @@ let rec pattern () : Term.pattern t =
   in
   choice [wildcard; variable; num; const; fun () -> parenthesized (force pattern)]
 
+let rec last (l : 'a list) (return : 'a -> 'r) (fail : unit -> 'r) : 'r = match l with
+  | [] -> fail ()
+  | [x] -> return x
+  | _ :: xs -> last xs return fail
+
 let rec term () : Term.t t =
   let num () =
     label "integer literal" @@
@@ -343,11 +366,61 @@ let rec term () : Term.t t =
   in
   let lam () =
     label "function literal" @@
-    bind here @@ fun start ->
-    bind kw_fun @@ fun _ ->
+    bind kw_fun @@ fun (loc_fun, _) ->
     bind lident @@ fun (loc_x, x) ->
+    bind sym_arrow @@ fun _ ->
     bind (force term) @@ fun body ->
-    let loc = Loc.Span.(make start (Term.loc_of_tm body).stop) in
+    let loc = Loc.Span.(join loc_fun @@ Term.loc_of_tm body) in
     pure @@ Term.Fun (loc, (loc_x, x), body)
   in
-  failwith "todo"
+  let let_ () =
+    label "let-expression" @@
+    bind kw_let @@ fun (loc_let, _) ->
+    bind (optional kw_rec) @@ fun rec_opt ->
+    bind lident @@ fun (loc_x, x) ->
+    bind sym_eq @@ fun _ ->
+    bind (force term) @@ fun e1 ->
+    bind kw_in @@ fun _ ->
+    bind (force term) @@ fun e2 ->
+    pure @@ Term.Let (
+      Loc.Span.join loc_let @@ Term.loc_of_tm e2,
+      Syntax.(if rec_opt = None then NonRec else Rec),
+      (loc_x, x),
+      e1,
+      e2
+    )
+  in
+  let match_ () =
+    let case =
+      label "match case" @@
+      bind sym_pipe @@ fun (loc_pipe, _) ->
+      bind (force pattern) @@ fun pat ->
+      bind sym_arrow @@ fun _ ->
+      bind (force term) @@ fun e ->
+      pure @@ Term.Case (Loc.Span.join loc_pipe @@ Term.loc_of_tm e, pat, e)
+    in
+    label "match-expression" @@
+    bind kw_match @@ fun (loc_match, _) ->
+    bind (force term) @@ fun e ->
+    bind kw_with @@ fun (loc_with, _) ->
+    bind (many case) @@ fun cases ->
+    pure @@ Term.Match (
+      Loc.Span.join loc_match @@ last cases Term.(fun case -> case_body case |> loc_of_tm) (fun () -> loc_with),
+      e,
+      cases
+    )
+  in
+  let const () =
+    bind uident @@ fun (loc_const, ctor_name) ->
+    bind (many @@ force term) @@ fun spine ->
+    pure @@ Term.Const (
+      Loc.Span.join loc_const @@ last spine Term.loc_of_tm (fun () -> loc_const),
+      ctor_name,
+      spine
+    )
+  in
+  let term1 = choice [let_; match_; lam; num; variable; const; fun () -> parenthesized @@ force term] in
+  bind term1 @@ fun e ->
+  bind (optional @@ force term) @@ function
+  | None -> pure e
+  | Some e' -> pure Term.(App (Loc.Span.join (loc_of_tm e) (loc_of_tm e'), e, e'))

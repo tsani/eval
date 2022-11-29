@@ -179,14 +179,22 @@ let map (f : 'a -> 'b) (p : 'a t) : 'b t = {
   run = fun r s fail return -> p.run r s fail @@ fun s x -> return s (f x)
 }
 
+(** Runs `p1'. If it fails without consuming input, runs `p2'.
+    If `p1' fails while consuming input, `p2' is not run.
+*)
+let alt (p1 : 'a t susp) (p2 : 'a t susp) : 'a t =
+  bind here @@ fun Loc.({ offset }) ->
+  bind (handle @@ force p1) @@ function
+  | Result.Ok x -> pure x
+  | Result.Error (l, _, _) when Loc.Span.(l.offset) = offset -> p2 ()
+  | Result.Error (_, `non_fatal, _) -> p2 ()
+  | Result.Error (l, fatality, e) -> fail_at l e
+
 (** Slightly specialized form of {!handle}.
     The failure must be non-fatal. Any failure can be made non-fatal with
     {!trying} *)
 let optional (p : 'a t) : 'a option t =
-  bind (handle p) @@ function
-  | Result.Error (_, `non_fatal, _) -> pure None
-  | Result.Error e -> fail_raw e
-  | Result.Ok x -> pure (Some x)
+  alt (fun () -> p |> map (fun x -> Some x)) (fun () -> pure None)
 
 (** `many p' parses `p' zero or more times.
     WARNING: `many p' for a parser `p' that succeeds consuming no input usually
@@ -217,24 +225,17 @@ let sep_by0 sep p =
     | Some xs -> pure xs
   end
 
-(** Runs `p1'. If it fails without consuming input, runs `p2'.
-    If `p1' fails while consuming input, `p2' is not run.
-*)
-let alt (p1 : 'a t susp) (p2 : 'a t susp) : 'a t =
-  bind here @@ fun Loc.({ offset }) ->
-  bind (handle @@ force p1) @@ function
-  | Result.Ok x -> pure x
-  | Result.Error (l, _, _) when Loc.Span.(l.offset) = offset -> p2 ()
-  | Result.Error (_, `non_fatal, _) -> p2 ()
-  | Result.Error (l, fatality, e) -> fail_at l e
-
 let choice (ps : 'a t susp list) : 'a t =
   force @@ List.fold_right (fun p acc -> delay @@ alt p acc) ps (fun () -> fail @@ ParseError.NoMoreChoices)
 
 (* Look at the character at the parser's current position. *)
 let peek : char t = {
   label = Anon;
-  run = fun r s fail return -> return s @@ String.get Env.(r.input) s.State.here.Loc.offset
+  run = fun r s fail return ->
+    if s.State.here.Loc.offset >= String.length r.Env.input then
+      fail ParseError.(make s.here `non_fatal @@ Unexpected (Label "end of input"))
+    else
+      return s @@ String.get Env.(r.input) s.State.here.Loc.offset
 }
 
 (* Advances the parser state by one character. *)
@@ -279,9 +280,13 @@ let string (str : string) : string t =
   let len = String.length str in {
     label = Label ("literal string `" ^ str ^ "'");
     run = fun r s fail return ->
-      let from_input = String.sub r.Env.input s.State.here.Loc.offset len in
-      if str = from_input then return (State.map_loc (Loc.bump len) s) str else
-        fail @@ ParseError.(make s.State.here `non_fatal @@ WrongLiteral { expected = str; actual = from_input })
+      let open State in let open Loc in let open Env in
+      if s.here.offset + len > String.length r.input then
+        fail @@ ParseError.(make s.here `non_fatal @@ Unexpected (Label "end of input"))
+      else
+        let from_input = String.sub r.input s.here.offset len in
+        if str = from_input then return (map_loc (bump len) s) str else
+          fail @@ ParseError.(make s.here `non_fatal @@ WrongLiteral { expected = str; actual = from_input })
   }
 
 (* `p1 |> not_followed_by p2` parses p1 provided that parsing p2 fails after it. *)
@@ -297,19 +302,20 @@ let both f g x = f x && g x
 let either f g x = f x || g x
 let all fs = List.fold_right both fs (fun _ -> true)
 let any fs = List.fold_right either fs (fun _ -> false)
-let letter = satisfy is_letter
-let lchar = satisfy (both is_letter is_lowercase)
-let uchar = satisfy (both is_letter is_uppercase)
-let alphanumeric = satisfy (any [is_letter; is_digit; is_symbol])
-let whitespace = satisfy is_whitespace
-let digit = satisfy is_digit |> map (fun x -> String.make 1 x |> int_of_string)
-let lparen = string "("
-let rparen = string ")"
+let letter = label "letter character" @@ satisfy is_letter
+let lchar = label "lowercase character" @@ satisfy (both is_letter is_lowercase)
+let uchar = label "uppercase character" @@ satisfy (both is_letter is_uppercase)
+let alphanumeric = label "alphanumeric character" @@ satisfy (any [is_letter; is_digit; is_symbol; fun x -> x = '_'])
+let whitespace = label "whitespace character" @@ satisfy is_whitespace
+let digit = label "digit character" @@ satisfy is_digit |> map (fun x -> String.make 1 x |> int_of_string)
 let raw_number =
   some digit |>
   map (fun ds -> List.fold_right (fun d (acc, pow10) -> (acc + d * pow10, pow10 * 10)) ds (0, 1)) |>
   map fst
 let symbol = satisfy is_symbol
+
+let between start stop p =
+  start &> p <& stop
 
 (* Parses a sequence of alphanumeric characters beginning with an uppercase letter. *)
 let uword : string t =
@@ -327,11 +333,7 @@ let lword : string t =
 
 (** Parses `p' followed possibly by some whitespace. *)
 let lexeme (p : 'a t) =
-  p <& many whitespace
-
-let number = lexeme (span raw_number)
-let uident = lexeme (span uword)
-let lident = lexeme (span lword)
+  label' p.label (p <& many whitespace)
 
 (** Parses a literal string ensuring that it isn't isn't a prefix of a bigger symbol. *)
 let symbol s = lexeme (span @@ string s) |> not_followed_by symbol
@@ -340,8 +342,13 @@ let sym_pipe = symbol "|"
 let sym_eq = symbol "="
 let sym_colon = symbol ":"
 
+let lparen = lexeme (string "(")
+let rparen = lexeme (string ")")
+
+let parenthesized p = between lparen rparen p
+
 (** Parses a literal string ensuring that that string isn't a prefix of a bigger word. *)
-let keyword s = lexeme (span @@ string s) |> not_followed_by alphanumeric
+let keyword s = label ("keyword `" ^ s ^ "'") @@ lexeme ((span @@ string s) |> not_followed_by alphanumeric)
 
 let kw_let = keyword "let"
 let kw_fun = keyword "fun"
@@ -350,11 +357,14 @@ let kw_match = keyword "match"
 let kw_rec = keyword "rec"
 let kw_with = keyword "with"
 let kw_def = keyword "def"
+let any_keyword = [kw_let; kw_fun; kw_in; kw_match; kw_rec; kw_with; kw_def] |> List.map delay |> choice
 
-let between start stop p =
-  start &> p <& stop
-
-let parenthesized p = lexeme (between lparen rparen p)
+let number = lexeme (span raw_number)
+let uident = lexeme (span uword)
+let lident =
+  bind (optional any_keyword) @@ function
+  | None -> lexeme (span lword)
+  | Some (loc, s) -> fail_at loc.Loc.Span.start @@ ParseError.Unexpected (Label ("keyword `" ^ s ^ "'"))
 
 (* ***** Complex syntax parsers ***** *)
 
@@ -408,15 +418,15 @@ let rec last (l : 'a list) (return : 'a -> 'r) (fail : unit -> 'r) : 'r = match 
   | _ :: xs -> last xs return fail
 
 let rec term () : Term.t t =
-  let num () =
+  let num () : Term.t t =
     label "integer literal" @@
     lexeme number |> map (fun (loc, n) -> Term.Num (loc, n))
   in
-  let variable () =
+  let variable () : Term.t t =
     label "variable" @@
     lident |> map (fun (loc, x) -> Term.Var (loc, x))
   in
-  let lam () =
+  let lam () : Term.t t =
     label "function literal" @@
     bind kw_fun @@ fun (loc_fun, _) ->
     bind lident @@ fun (loc_x, x) ->
@@ -425,7 +435,7 @@ let rec term () : Term.t t =
     let loc = Loc.Span.(join loc_fun @@ Term.loc_of_tm body) in
     pure @@ Term.Fun (loc, (loc_x, x), body)
   in
-  let let_ () =
+  let let_ () : Term.t t =
     label "let-expression" @@
     bind kw_let @@ fun (loc_let, _) ->
     bind (optional kw_rec) @@ fun rec_opt ->
@@ -442,7 +452,7 @@ let rec term () : Term.t t =
       e2
     )
   in
-  let match_ () =
+  let match_ () : Term.t t =
     let case =
       label "match case" @@
       bind sym_pipe @@ fun (loc_pipe, _) ->
@@ -462,7 +472,7 @@ let rec term () : Term.t t =
       cases
     )
   in
-  let const () =
+  let const () : Term.t t =
     bind uident @@ fun (loc_const, ctor_name) ->
     bind (many @@ force term) @@ fun spine ->
     pure @@ Term.Const (
@@ -472,10 +482,8 @@ let rec term () : Term.t t =
     )
   in
   let term1 = choice [let_; match_; lam; num; variable; const; fun () -> parenthesized @@ force term] in
-  bind term1 @@ fun e ->
-  bind (optional @@ force term) @@ function
-  | None -> pure e
-  | Some e' -> pure Term.(App (Loc.Span.join (loc_of_tm e) (loc_of_tm e'), e, e'))
+  bind (some term1) @@ fun (e :: es) ->
+  pure @@ List.fold_left Term.(fun a e -> App (Loc.Span.join (loc_of_tm a) (loc_of_tm e), a, e)) e es
 
 let tm_decl : Decl.tm t =
   bind kw_def @@ fun (loc_def, _) ->

@@ -1,6 +1,6 @@
-def k = fun x y -> x
+def k = fun x -> fun y -> x
 def i = fun x -> x
-def s = fun f1 f2 x -> f1 x (f2 x)
+def s = fun f1 -> fun f2 -> fun x -> f1 x (f2 x)
 
 def true = k
 def false = s k

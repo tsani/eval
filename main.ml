@@ -414,14 +414,18 @@ let read_file filename =
 let main () =
   let filename = Array.get Sys.argv 1 in
   let input = read_file filename in
-  let epf = Format.err_formatter in
-  let ppf = Format.std_formatter in
+  let epf = err_formatter in
+  let ppf = std_formatter in
   match Parser.(parse_only program) filename input with
-  | Result.Error e -> fprintf epf "Parse error."
-  | Result.Ok program -> fprintf ppf "Parse succeeded.";
+  | Result.Error e ->
+    fprintf epf "%a@." Parser.ParseError.print e
+  | Result.Ok program ->
+    fprintf ppf "Parse succeeded.@.";
     match Scopecheck.check_program [] [] [] program with
-    | Result.Error e -> fprintf epf "Scopecheck error."
+    | Result.Error e ->
+      fprintf epf "%a@." Scopecheck.Error.print e
     | Result.Ok program ->
+      fprintf ppf "Scopecheck succeeded.@.";
       match Typecheck.check_program epf Syntax.Internal.Signature.empty program with
       | Result.Error report ->
         fprintf epf "@[<v 2>Type error.@,%a@]@]@." print_error_report report;

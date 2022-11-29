@@ -23,6 +23,27 @@ module Error = struct
 
   type t = Loc.span * content
   let make s c = (s, c)
+
+  let print ppf (loc, content) =
+    let open Format in
+    let print_content ppf = function
+      | UnboundTypeVariable a -> fprintf ppf "unbound type variable %s" a
+      | UnknownNamedType a -> fprintf ppf "unknown named type %s" a
+      | BadArity { expected; actual; tp_name } ->
+        fprintf ppf "wrong number of arguments for type constructor %s; expected %d, but got %d"
+          tp_name expected actual
+      | BadConstructorArity { expected; actual; ctor_name } ->
+        fprintf ppf "wrong number of arguments for constructor %s; expected %d, but got %d"
+          ctor_name expected actual
+      | UnboundVariable x ->
+        fprintf ppf "unbound variable %s" x
+      | UnboundConstructor c ->
+        fprintf ppf "unbound constructor %s" c
+      | DuplicateTVarBinders xs ->
+        fprintf ppf "duplicate type variable binders in declaration: %a"
+          (pp_print_list ~pp_sep: (fun ppf _ -> fprintf ppf ", ") pp_print_string) xs
+    in
+    fprintf ppf "%a: scopecheck error: @[%a@]" Loc.print loc.Loc.Span.start print_content content
 end
 
 type 'a result = (Error.t, 'a) Result.t

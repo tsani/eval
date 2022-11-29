@@ -383,7 +383,7 @@ let check_decl ppf (sg : Term.t Signature.t) : Term.t Decl.t -> Term.t Signature
         Result.bind begin match typ with
           | None -> (* no user-supplied type *)
             let tp = TMVar.apply_sub s.tmvars tp in
-            Format.fprintf ppf "@[<hv>Inferred %s :@ @[%a@]@]" name (P.print_tp 0) tp;
+            Format.fprintf ppf "@[<hv>Inferred %s :@ @[%a@]@]@," name (P.print_tp 0) tp;
             let tpsc = generalize [] tp in
             Format.fprintf ppf "@[<hv 2>Generalized type is@ %a@]@," (P.print_tp_sc 0) tpsc;
             Result.ok tpsc

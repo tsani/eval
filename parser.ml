@@ -50,6 +50,11 @@ type parser_label =
   | Label of string
   | OneOf of parser_label list
 
+let rec normalize_label = function
+  | Anon -> []
+  | Label l -> [l]
+  | OneOf ls -> List.fold_right (fun l ss -> normalize_label l @ ss) ls []
+
 module ParseError = struct
   type content =
     | WrongLiteral of { expected : string; actual : string }
@@ -57,11 +62,34 @@ module ParseError = struct
     | NoMoreChoices
     | NotFollowedBy of parser_label
     | Expected of parser_label
+    | Unexpected of parser_label
 
   (** A fatal error occurs when a parser fails after having consumed input. *)
   type t = Loc.t * [ `fatal | `non_fatal ] * content
 
   let make l fatality content = (l, fatality, content)
+
+  let print ppf (loc, _, content) =
+    let open Format in
+    let print_content ppf content = match content with
+      | WrongLiteral { expected } -> fprintf ppf "expected literal string `%s'" expected
+      | Unsatisfied -> fprintf ppf "satisfaction failed"
+      | NoMoreChoices -> fprintf ppf "tried all the choices"
+      | NotFollowedBy label ->
+        fprintf ppf "not followed by @[%a@]"
+          (pp_print_list ~pp_sep: (fun ppf () -> fprintf ppf " ") (fun s -> fprintf ppf "%s")) (normalize_label label)
+      | Expected label ->
+        fprintf ppf "expected @[%a@]"
+          (pp_print_list ~pp_sep: (fun ppf () -> fprintf ppf " ") (fun s -> fprintf ppf "%s")) (normalize_label label)
+      | Unexpected label ->
+        fprintf ppf "unexpected @[%a@]"
+          (pp_print_list ~pp_sep: (fun ppf () -> fprintf ppf " ") (fun s -> fprintf ppf "%s")) (normalize_label label)
+    in
+    fprintf ppf "%s:%d:%d: parse error: @[%a@]"
+      loc.Loc.filename
+      loc.Loc.line
+      loc.Loc.column
+      print_content content
 end
 
 type 'a t = {

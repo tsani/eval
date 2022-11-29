@@ -22,7 +22,7 @@ let fake = {
 let is_fake { offset; line; column; filename } = offset = -1 || line = -1 || column = -1 || filename = "<fake>"
 
 (* Increments offset and line resetting column to 1 *)
-let next_line l = { l with offset = l.offset + 1; line = l.line + 1; column = l.column + 1 }
+let next_line l = { l with offset = l.offset + 1; line = l.line + 1; column = 1 }
 
 (* Increases the offset and column of the location by the given count, keeping the line unchanged. *)
 let bump n l = { l with offset = l.offset + n; column = l.column + n }

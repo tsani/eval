@@ -357,7 +357,8 @@ let kw_match = keyword "match"
 let kw_rec = keyword "rec"
 let kw_with = keyword "with"
 let kw_def = keyword "def"
-let any_keyword = [kw_let; kw_fun; kw_in; kw_match; kw_rec; kw_with; kw_def] |> List.map delay |> choice
+let kw_type = keyword "type"
+let any_keyword = [kw_let; kw_fun; kw_in; kw_match; kw_rec; kw_with; kw_def; kw_type] |> List.map delay |> choice
 
 let number = lexeme (span raw_number)
 let uident = lexeme (span uword)
@@ -371,19 +372,19 @@ let lident =
 open Syntax.External
 
 let rec typ () : Type.t t =
-  let named () =
+  let rec named () =
     label "named type" @@
     bind uident @@ fun (loc, a) ->
-    bind (many @@ force typ) @@ fun ts ->
+    bind (many @@ force atomic) @@ fun ts ->
     pure @@ Type.Named (loc, a, ts)
-  in
-  let tvar () =
+  and tvar () =
     label "type variable" @@
     bind lident @@ fun (loc, a) ->
     pure @@ Type.TVar (loc, a)
+  and atomic () =
+    label "atomic type" @@ choice [named; tvar; fun _ -> parenthesized @@ force typ]
   in
-  let atomic = label "atomic type" @@ choice [named; tvar] in
-  bind atomic @@ fun t ->
+  bind (atomic ()) @@ fun t ->
   bind (optional sym_arrow) @@ function
   | None -> pure t
   | Some _ ->
@@ -425,6 +426,20 @@ let rec term () : Term.t t =
   let variable () : Term.t t =
     label "variable" @@
     lident |> map (fun (loc, x) -> Term.Var (loc, x))
+  in
+  let const0 () =
+    bind uident @@ fun (loc_const, ctor_name) ->
+    pure @@ Term.Const (loc_const, ctor_name, [])
+  in
+  let atomic () = choice [num; variable; const0; fun _ -> parenthesized @@ force term] in
+  let const () : Term.t t =
+    bind uident @@ fun (loc_const, ctor_name) ->
+    bind (many @@ force atomic) @@ fun spine ->
+    pure @@ Term.Const (
+      Loc.Span.join loc_const @@ last spine Term.loc_of_tm (fun () -> loc_const),
+      ctor_name,
+      spine
+    )
   in
   let lam () : Term.t t =
     label "function literal" @@
@@ -472,16 +487,7 @@ let rec term () : Term.t t =
       cases
     )
   in
-  let const () : Term.t t =
-    bind uident @@ fun (loc_const, ctor_name) ->
-    bind (many @@ force term) @@ fun spine ->
-    pure @@ Term.Const (
-      Loc.Span.join loc_const @@ last spine Term.loc_of_tm (fun () -> loc_const),
-      ctor_name,
-      spine
-    )
-  in
-  let term1 = choice [let_; match_; lam; num; variable; const; fun () -> parenthesized @@ force term] in
+  let term1 = choice [let_; match_; lam; const; atomic] in
   bind (some term1) @@ fun (e :: es) ->
   pure @@ List.fold_left Term.(fun a e -> App (Loc.Span.join (loc_of_tm a) (loc_of_tm e), a, e)) e es
 
@@ -500,9 +506,33 @@ let tm_decl : Decl.tm t =
       loc = Loc.Span.join loc_def @@ Term.loc_of_tm body
     })
 
+let ctor_decl : Decl.ctor t =
+  bind sym_pipe @@ fun (loc_pipe, _) ->
+  bind uident @@ fun (loc_name, name) ->
+  bind (force typ |> many) @@ fun fields ->
+  pure Decl.({
+      name;
+      fields;
+      loc = Loc.Span.join loc_name @@ last fields Type.loc_of_tp (fun _ -> loc_name)
+    })
+
+let tp_decl : Decl.tp t =
+  bind kw_type @@ fun (loc_type, _) ->
+  bind uident @@ fun (_, name) ->
+  bind (many lident) @@ fun xs ->
+  bind sym_eq @@ fun (loc_eq, _) ->
+  bind (many ctor_decl) @@ fun constructors ->
+  pure Decl.({
+      name;
+      tvar_binders = List.map snd xs;
+      constructors;
+      loc = Loc.Span.join loc_type @@ last constructors (fun Decl.({ loc }) -> loc) (fun () -> loc_eq)
+    })
+
 let decl : Decl.t t =
-  tm_decl |> map (fun d -> Decl.TmDecl d)
-  (* TODO add type declaractions *)
+  alt
+    (fun () -> tm_decl |> map (fun d -> Decl.TmDecl d))
+    (fun () -> tp_decl |> map (fun d -> Decl.TpDecl d))
 
 let program = many decl
 

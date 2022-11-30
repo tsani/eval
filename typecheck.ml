@@ -361,7 +361,6 @@ let rec infer_tm (env : infer_env) (s : infer_state) : Term.t -> (infer_state * 
     let outer_tmvars = TMVar.all_in_ctx env.ctx in
     (* Finally we can generalize the type of e1. *)
     let tp_sc = generalize outer_tmvars scru_tp in
-    let s = map_tmvars TMVar.prune_sub s in
     (* Form a new version of env', but this time using the generalized type of e1 for x. *)
     let env = extend_ctx env (x, tp_sc) in
     push_scoped env e2 @@ infer_tm env s e2
@@ -371,7 +370,6 @@ let rec infer_tm (env : infer_env) (s : infer_state) : Term.t -> (infer_state * 
     let scru_tp = TMVar.apply_sub s.tmvars scru_tp in
     let outer_tmvars = TMVar.all_in_ctx env.ctx in
     let tp_sc = generalize outer_tmvars scru_tp in
-    let s = map_tmvars TMVar.prune_sub s in
     let env = extend_ctx env (x, tp_sc) in
     push_scoped env e2 @@ infer_tm env s e2
 

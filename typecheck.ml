@@ -91,6 +91,8 @@ let instantiate_ctor_type (env : infer_env) (s : infer_state) (c : ctor_name) : 
   let td = Signature.lookup_tp' cd.owner_name env.sg in
   instantiate s (syn_ctor_type td cd)
 
+let letters : tvar_name list = ["a"; "b"; "c"; "d"; "e"; "f"; "g"; "h"]
+
 (* Constructs a polytype from a monotype having only uninstantiated TMVars by
  * converting into TVars those uninstantiated TMVars not appearing in the given
  * list of "outer TMVars" into TVars.
@@ -102,19 +104,19 @@ let generalize (outer : (Type.loc * tmvar_name) list) (tp : Type.t) : Type.sc =
     List.filter (fun (_, x) -> not @@ List.exists (fun (_, y) -> x = y) outer)
   in
   (* Construct a substitution that eliminates the TMVars into TVars *)
-  let next tmvars (loc, x) = match TMVar.lookup tmvars x with
+  let next (a :: letters, tmvars) (loc, x) = match TMVar.lookup tmvars x with
     | `not_found ->
       let prefix, n = TMVar.parse x in
-      TMVar.extend_sub tmvars x ~inst: (Some (TVar (loc, prefix ^ string_of_int n)))
+      (letters, TMVar.extend_sub tmvars x ~inst: (Some (TVar (loc, a))))
       (* TODO something better than this trash *)
-    | `inst t -> tmvars (* in case of duplicates do nothing *)
+    | `inst t -> (letters, tmvars) (* in case of duplicates do nothing *)
 
     (* Since we are constructing the substitution right here, and every entry we
        put in it is instantiated, we have the invariant that `uninst is an
        impossible case. *)
     | `uninst -> raise @@ Util.Invariant "every tmvar is instantiated in the substitution we are building"
   in
-  let tmvars = List.fold_left next TMVar.empty_sub tmvar_locd_names in
+  let (_, tmvars) = List.fold_left next (letters, TMVar.empty_sub) tmvar_locd_names in
   (* The substitution is in fact a renaming of TMVars to TVars and contains no
      uninstantiated vars, so the following partial matching is justified. *)
   let binders = List.map (fun (_, Some (Type.TVar (_, x))) -> x) @@ TMVar.list_of_sub tmvars in

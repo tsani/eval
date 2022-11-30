@@ -1,3 +1,9 @@
+type Nat =
+  | Z
+  | S Nat
+
+def z = Z
+
 def k = fun x -> fun y -> x
 def i = fun x -> x
 def s = fun f1 -> fun f2 -> fun x -> f1 x (f2 x)
@@ -5,3 +11,87 @@ def s = fun f1 -> fun f2 -> fun x -> f1 x (f2 x)
 def true = k
 def false = s k
 
+type List a =
+  | Nil
+  | Cons a (List a)
+
+def rec fold_list : (a -> b -> b) -> List a -> b -> b =
+  fun f -> fun l -> fun e -> match l with
+  | Nil -> e
+  | Cons x xs -> f x (fold_list f xs e)
+
+type Bool =
+  | True
+  | False
+
+def rec plus : Nat -> Nat -> Nat =
+  fun n -> fun m -> match n with
+  | Z -> m
+  | S n -> plus n (S m)
+
+def rec times : Nat -> Nat -> Nat =
+  fun n -> fun m -> match n with
+  | Z -> Z
+  | S n -> plus m (times n m)
+
+def map : (a -> b) -> List a -> List b =
+  fun f -> fun l -> fold_list (fun x -> Cons (f x)) l Nil
+
+def sum_list : List Nat -> Nat =
+  fun l -> fold_list plus l Z
+
+def rec double : Nat -> Nat =
+  fun n -> match n with
+  | Z -> Z
+  | S n -> S (S (double n))
+
+def two = S (S Z)
+
+def four = double two
+
+def rec halve = fun n -> match n with
+  | Z -> Z
+  | S Z -> Z
+  | S (S n) -> S (halve n)
+
+def half_of_four = halve four
+
+type Unit =
+  | U
+
+def bool = fun b -> fun k1 -> fun k2 -> match b with
+  | True -> k1 U
+  | False -> k2 U
+
+def rec list_eq : (a -> a -> Bool) -> List a -> List a -> Bool =
+  fun eq -> fun l1 -> fun l2 ->
+  match l1 with
+  | Nil -> (match l2 with
+    | Nil -> True
+    | _ -> False)
+  | Cons x xs -> (match l2 with
+    | Nil -> False
+    | Cons y ys ->
+      bool (eq x y)
+        (fun u -> list_eq eq xs ys)
+        (fun u -> False))
+
+def rec nat_eq = fun n -> fun m ->
+  match n with
+  | Z -> (match m with
+    | Z -> True
+    | _ -> False)
+  | S n -> (match m with
+    | Z -> False
+    | S m -> nat_eq n m)
+
+def length = fun l -> fold_list (fun x -> fun len -> S len) l Z
+
+def rec replicate = fun n -> fun x ->
+  match n with
+  | Z -> Nil
+  | S n -> Cons x (replicate n x)
+
+def rec oops : a -> b = fun x -> oops x
+
+def test1 = list_eq nat_eq (replicate four four) (replicate four four)

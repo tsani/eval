@@ -100,15 +100,14 @@ let print_sub ppf (tmvars : sub) : unit =
     ppf
     (Util.StringMap.bindings tmvars)
 
-(* Decides whether a tmvar appears in a type *)
+(** Decides whether a given uninstantiated tmvar appears in a type *)
 let rec occurs (tmvars : sub) (x : tmvar_name) : tp -> bool = function
   | Named (_, _, ts) -> List.exists (occurs tmvars x) ts
   | Int _ -> false
   | TVar (_, _) -> false
   | Arrow (_, t1, t2) -> occurs tmvars x t1 || occurs tmvars x t2
-  | TMVar (_, y) when x = y -> true
   | TMVar (_, y) -> match lookup' tmvars y with
-    | `uninst -> false
+    | `uninst -> x = y
     | `inst t -> occurs tmvars x t
 
 (** Resolves a chain of TMVar-TMVar instantiations.

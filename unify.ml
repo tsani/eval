@@ -40,7 +40,7 @@ and unify_tmvar (tmvars : TMVar.sub) (x : tmvar_name) (tp : Type.t) : TMVar.sub 
   | `uninst -> match TMVar.chase tmvars tp with
     | TMVar (_, y) when y = x ->
       Result.ok tmvars (* unifying a tmvar with itself does nothing *)
-    | _ when TMVar.occurs tmvars x tp ->
+    | tp when TMVar.occurs tmvars x tp ->
       Result.error @@ `occurs_check (x, TMVar.apply_sub tmvars tp)
     | _ ->
       Result.ok (TMVar.extend_sub tmvars ~inst: (Some tp) x)

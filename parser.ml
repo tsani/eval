@@ -377,21 +377,27 @@ let rec typ () : Type.t t =
   let rec named () =
     label "named type" @@
     bind uident @@ fun (loc, a) ->
-    bind (many @@ force atomic) @@ fun ts ->
+    bind (many @@ force atomic_typ) @@ fun ts ->
     pure @@ Type.Named (loc, a, ts)
-  and tvar () =
-    label "type variable" @@
-    bind lident @@ fun (loc, a) ->
-    pure @@ Type.TVar (loc, a)
-  and atomic () =
-    label "atomic type" @@ choice [named; tvar; fun _ -> parenthesized @@ force typ]
   in
-  bind (atomic ()) @@ fun t ->
+  bind (alt named atomic_typ) @@ fun t ->
   bind (optional sym_arrow) @@ function
   | None -> pure t
   | Some _ ->
     bind (force typ) @@ fun t' ->
     pure Type.(Arrow (Loc.Span.join (loc_of_tp t) (loc_of_tp t'), t, t'))
+
+and atomic_typ () : Type.t t =
+  let named0 () =
+    bind uident @@ fun (loc, a) ->
+    pure @@ Type.Named (loc, a, [])
+  in
+  let tvar () =
+    label "type variable" @@
+    bind lident @@ fun (loc, a) ->
+    pure @@ Type.TVar (loc, a)
+  in
+  label "atomic type" @@ choice [named0; tvar; fun _ -> parenthesized @@ force typ]
 
 let rec pattern () : Term.pattern t =
   let wildcard () =
@@ -489,7 +495,7 @@ let rec term () : Term.t t =
       cases
     )
   in
-  let term1 = choice [let_; match_; lam; const; atomic] in
+  let term1 = choice [let_; match_; lam; atomic; const] in
   bind (some term1) @@ fun (e :: es) ->
   pure @@ List.fold_left Term.(fun a e -> App (Loc.Span.join (loc_of_tm a) (loc_of_tm e), a, e)) e es
 
@@ -511,7 +517,7 @@ let tm_decl : Decl.tm t =
 let ctor_decl : Decl.ctor t =
   bind sym_pipe @@ fun (loc_pipe, _) ->
   bind uident @@ fun (loc_name, name) ->
-  bind (force typ |> many) @@ fun fields ->
+  bind (force atomic_typ |> many) @@ fun fields ->
   pure Decl.({
       name;
       fields;

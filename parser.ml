@@ -336,7 +336,7 @@ let lexeme (p : 'a t) =
   label' p.label (p <& many whitespace)
 
 (** Parses a literal string ensuring that it isn't isn't a prefix of a bigger symbol. *)
-let symbol s = lexeme (span @@ string s) |> not_followed_by symbol
+let symbol s = lexeme (span @@ string s |> not_followed_by symbol)
 let sym_arrow = symbol "->"
 let sym_pipe = symbol "|"
 let sym_eq = symbol "="

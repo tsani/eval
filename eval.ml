@@ -110,6 +110,11 @@ let rec eval (s : State.t) (env : Env.t) : Term.t -> Value.t = function
         debug_print s "@[<v 2>Enter closure with now-full env@ %a@]@,"
           P.print_env env';
         eval s env' e
+      | Const (c, ts) ->
+        (* In this case we simply add the term to the spine!
+           This is what enables curried constructors. (Which are allowed by the type system already.) *)
+        let v2 = eval s env e2 in
+        Const (c, ts @ [v2])
       | e -> RuntimeError.apply_non_clo v1 (sco, e2)
     end
   | Let (_, NonRec, (_, x), e1, e2) ->

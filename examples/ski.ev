@@ -94,4 +94,45 @@ def rec replicate = fun n -> fun x ->
 
 def rec oops : a -> b = fun x -> oops x
 
-def test1 = list_eq nat_eq (replicate four four) (replicate four four)
+def four_fours = replicate four four
+
+def sixteen = double (double four)
+
+def test1 = list_eq nat_eq four_fours (replicate four four)
+
+def five = S (S (S (S (S Z))))
+
+def list_of_lists = replicate five four_fours
+
+def sums = map sum_list list_of_lists
+
+def rec forall = fun p -> fun l -> match l with
+  | Nil -> True
+  | Cons x xs ->
+    bool (p x) (fun u -> forall p xs) (fun u -> False)
+
+def test2 = forall (nat_eq sixteen) sums
+
+type Exp =
+  | Var Nat
+  | App Exp Exp
+  | Lam Exp
+  | Clo (List Exp) Exp
+
+def rec index = fun n -> fun l -> match n with
+  | Z -> (match l with
+    | Cons x _ -> x)
+  | S n -> (match l with
+    | Cons _ xs -> index n xs)
+
+def rec eval : List Exp -> Exp -> Exp = fun env -> fun e -> match e with
+  | Var i -> index i env
+  | App e1 e2 -> (match eval env e1 with
+    | Clo env1 body ->
+      let v = eval env e2 in
+      eval (Cons v env1) body)
+  | Lam e -> Clo env e
+  | Clo env e -> Clo env e
+
+def self_app = Lam (App (Var Z) (Var Z))
+def omega = fun u -> eval Nil (App self_app self_app)

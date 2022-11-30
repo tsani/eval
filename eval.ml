@@ -146,14 +146,8 @@ let eval_decl (s : State.t) (d : Term.t Decl.t) : State.t = let open Decl in mat
     let s = s |> State.modify_signature
       (if recursive then Signature.extend_tms name { d with body = None } else fun x -> x)
     in
-    debug_print s "Evaluating definition for %s@," name;
+    debug_print s "Evaluating definition for %s.@," name;
     let v = eval s Env.empty body in
-    begin let open Format in
-      fprintf std_formatter "- @[<hv 2>val %s =@ %a@]%a"
-        name
-        (P.print_value 0) v
-        pp_print_newline ()
-    end;
     s |> State.modify_signature (Signature.extend_tms name { d with body = Some v })
 
 let program initial_state program : (RuntimeError.t, State.t) Result.t =

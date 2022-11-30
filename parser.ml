@@ -348,7 +348,9 @@ let rparen = lexeme (string ")")
 let parenthesized p = between lparen rparen p
 
 (** Parses a literal string ensuring that that string isn't a prefix of a bigger word. *)
-let keyword s = label ("keyword `" ^ s ^ "'") @@ lexeme ((span @@ string s) |> not_followed_by alphanumeric)
+let keyword s =
+  label ("keyword `" ^ s ^ "'") @@
+  lexeme (trying ((span @@ string s) |> not_followed_by alphanumeric))
 
 let kw_let = keyword "let"
 let kw_fun = keyword "fun"

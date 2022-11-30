@@ -442,21 +442,31 @@ let check_decl ppf (sg : Term.t Signature.t) : Term.t Decl.t -> Term.t Signature
     Format.fprintf ppf "@[<v 2>Typechecking declaration for %s@," name;
     (* associate a fresh type variable to the definition, so that when we look
        up the type of the function for recursion, we end up unifying
-       appropriately to figure out the type of the function. *)
-    let tmvars, sg =
+       appropriately to figure out the type of the function.
+       tp_synth is the type of the thing we're defining; that type is only
+       associated in the signature to the thing we're defining for recursive
+       definitions.
+       This type needs to be unified with the type we infer for the term to
+       detect certain infinite types.
+       e.g. `def rec oops = fun x -> oops` should not typecheck.
+    *)
+    let tmvars, sg, tp_synth =
       let open Type in
+      let tmvars, x = TMVar.fresh TMVar.empty_sub "a" in
+      let tp = TMVar (`inferred loc, x) in
       if recursive then
-        let tmvars, x = TMVar.fresh TMVar.empty_sub "a" in
-        (tmvars, Signature.declare_tm sg { d with typ = Some (mono @@ TMVar (`inferred loc, x)) })
+        (tmvars, Signature.declare_tm sg { d with typ = Some (mono tp) }, tp)
       else
-        (TMVar.empty_sub, sg)
+        (tmvars, sg, tp)
     in
     let sg' = match body with
       | None -> Result.ok @@ sg
       | Some body ->
         Format.fprintf ppf "Inferring body of declaration for %s@," name;
         Result.bind (infer_tm (make_env ppf sg) { tmvars } body) @@ fun (s, tp) ->
-        (* Unify the user-supplied type as expected type *)
+        Result.bind begin
+          unify loc (`recursive (name, tp)) (Unify.types s.tmvars (tp_synth, tp))
+        end @@ fun tmvars ->
         Result.bind begin match typ with
           | None -> (* no user-supplied type *)
             let tp = TMVar.apply_sub s.tmvars tp in

@@ -348,63 +348,6 @@ let program =
 
 open Format
 
-let print_mismatch_kind ppf : Typecheck.unify_kind -> unit = function
-  | `scru_pat (scope, scru_and_tp, pat_and_tp) ->
-    fprintf ppf "@[<v>@[<v 2>when unifying the match scrutinee@,@[%a@]@]@,@[<v 2>with the pattern@,@[%a@]@]@]"
-      (P.print_tm_tp scope) scru_and_tp
-      P.print_pat_tp pat_and_tp
-  | `app (scope, e) -> fprintf ppf "when expecting @[%a@] to have a function type." (P.print_tm 0 scope) e
-  | `ctor_spine (scope, (ctor, ctor_tp), (sp, inf_ctor_tp)) ->
-    fprintf ppf "@[<v>@[<hv 2>when matching constructor@ @[<hv 2>%s :@ %a@]@]@,@[<hv 2>with spine@ %a@]@,@[hv 2>for which the inferred constructor type is@ %a@]@]"
-      ctor
-      (P.print_tp 0) ctor_tp
-      (P.print_spine 10 scope) sp
-      (P.print_tp 0) inf_ctor_tp
-  | `ctor_pat_spine ((ctor, ctor_tp), (pat_sp, inf_ctor_tp)) ->
-    fprintf ppf "@[<v>@[<hv 2>when matching constructor@ @[<hv 2>%s :@ %a@]@]@,@[<hv 2>with pattern spine@ %a@]@,@[hv 2>for which the inferred constructor type is@ %a@]@]"
-      ctor
-      (P.print_tp 0) ctor_tp
-      (P.print_pat_spine 10) pat_sp
-      (P.print_tp 0) inf_ctor_tp
-  | `case_body ((scope, body), body_tp, body_tp') ->
-    fprintf ppf "@[<v>@[<hv 2>when unifying the inferred type@ %a@]@,@[<hv 2>of the case body@ %a@]@,@[<hv 2>against the inferred type of the other branches@ %a@]@]"
-      (P.print_tp 0) body_tp
-      (P.print_tm 0 scope) body
-      (P.print_tp 0) body_tp'
-  | `decl (c, user_tp, inf_tp) ->
-    fprintf ppf "@[<v>@[<hv 2>when unifying the given type@ %a@]@,of the declaration for `%s'@,@[<hv 2>against the inferred type@ %a@]@]"
-      (P.print_tp 0) user_tp
-      c
-      (P.print_tp 0) inf_tp
-
-let print_type_error ppf : Typecheck.TypeError.t -> unit = function
-  | `mismatch (k, t1, t2) ->
-    fprintf ppf "@[<v 2>Type mismatch.@,@[<2>Expected:%a%a@]@,@[<2>Inferred:%a%a@]@,%a@]"
-      pp_print_space ()
-      (P.print_tp 0) t1
-      pp_print_space ()
-      (P.print_tp 0) t2
-      print_mismatch_kind k
-  | `infinite_type (x, tp) ->
-    fprintf ppf "@[<v 2>Cannot construct infinite type.@,Type variable %s occurs in type @[%a@]@]"
-      x
-      (P.print_tp 0) tp
-
-(* Takes the last `n` elements of the given list.
- * If there are fewer than n elements in the list, the list is returned as is. *)
-let last_n (l : 'a list) (n : int) =
-  snd @@ List.fold_right (fun x (n, l) -> if n > 0 then (n - 1, x :: l) else (0, l)) l (n, [])
-
-let print_term_stack ppf term_stack =
-  let term_stack = last_n term_stack 3 in
-  fprintf ppf "@[<v>Enclosing terms:@,%a@]"
-    (pp_print_list ~pp_sep: pp_print_cut begin fun ppf (scope, e) ->
-        fprintf ppf "- @[%a@]" (P.print_tm 0 scope) e
-      end) term_stack
-
-let print_error_report ppf ({ error; term_stack } : Typecheck.TypeError.report): unit =
-  fprintf ppf "@[<v>%a@,%a@]" print_type_error error print_term_stack term_stack
-
 let read_file filename =
   let h = open_in_bin filename in
   let s = really_input_string h (in_channel_length h) in
@@ -454,8 +397,7 @@ let main () =
     | Result.Ok program ->
       fprintf ppf "Scopechecking succeeded.@.";
       match Typecheck.check_program epf Syntax.Internal.Signature.empty program with
-      | Result.Error report ->
-        fprintf epf "@[<v 2>Type error.@,%a@]@." print_error_report report;
+      | Result.Error report -> Typecheck.Error.print_report epf report;
       | Result.Ok sg_t ->
         fprintf ppf "Typechecking succeeded.@.";
         match Eval.(program (State.empty epf)) program with

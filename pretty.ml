@@ -79,11 +79,11 @@ module Internal = struct
         (print_tm 0 @@ Scope.extend scope x) e2
         rparen (lvl > 8)
     | Match (_, e, cases) ->
-      fprintf ppf "%a@[<v>@[<v 2>match @[%a@] with @,%a@]@,@]end%a"
-        lparen (lvl > 8)
+      fprintf ppf "%a@[<v>@[<v>match @[%a@] with @,%a@]@]%a"
+        lparen (lvl > 0)
         (print_tm 0 scope) e
         (print_cases scope) cases
-        rparen (lvl > 8)
+        rparen (lvl > 0)
     | Const (_, c, spine) -> match spine with
       | [] -> fprintf ppf "%s" c
       | spine ->
@@ -98,7 +98,7 @@ module Internal = struct
 
   and print_case scope ppf : case -> unit = function
     | Case (_, pat, body) ->
-      fprintf ppf "@[<hv 2>%a ->@ %a@]"
+      fprintf ppf "@[<hv 2>| %a ->@ %a@]"
         (print_pattern 0) pat
         (print_tm 0 (extend_with_pattern_vars scope pat)) body
 

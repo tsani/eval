@@ -140,9 +140,12 @@ type unify_kind = [
 
   (* Unifying a user-supplied annotation with the inferred type of a declared term. *)
   | `decl of tm_name * Type.t * Type.t
+
+  (* Unifying the type variable for a recursive term with its inferred type. *)
+  | `recursive of tm_name * Type.t
 ]
 
-module TypeError = struct
+module Error = struct
   type t = [
     | `mismatch of unify_kind * Type.t * Type.t
     | `infinite_type of tmvar_name * Type.t
@@ -163,22 +166,94 @@ module TypeError = struct
   }
 
   let report loc (error : t) = { loc; error; term_stack = [] }
+
+
+  let print_mismatch_kind ppf : unify_kind -> unit =
+    let open Format in
+    function
+    | `scru_pat (scope, scru_and_tp, pat_and_tp) ->
+      fprintf ppf "@[<v>@[<v 2>when unifying the match scrutinee@,@[%a@]@]@,@[<v 2>with the pattern@,@[%a@]@]@]"
+        (P.print_tm_tp scope) scru_and_tp
+        P.print_pat_tp pat_and_tp
+    | `app (scope, e) -> fprintf ppf "when expecting @[%a@] to have a function type." (P.print_tm 0 scope) e
+    | `ctor_spine (scope, (ctor, ctor_tp), (sp, inf_ctor_tp)) ->
+      fprintf ppf "@[<v>@[<hv 2>when matching constructor@ @[<hv 2>%s :@ %a@]@]@,@[<hv 2>with spine@ %a@]@,@[<hv 2>for which the inferred constructor type is@ %a@]@]"
+        ctor
+        (P.print_tp 0) ctor_tp
+        (P.print_spine 10 scope) sp
+        (P.print_tp 0) inf_ctor_tp
+    | `ctor_pat_spine ((ctor, ctor_tp), (pat_sp, inf_ctor_tp)) ->
+      fprintf ppf "@[<v>@[<hv 2>when matching constructor@ @[<hv 2>%s :@ %a@]@]@,@[<hv 2>with pattern spine@ %a@]@,@[hv 2>for which the inferred constructor type is@ %a@]@]"
+        ctor
+        (P.print_tp 0) ctor_tp
+        (P.print_pat_spine 10) pat_sp
+        (P.print_tp 0) inf_ctor_tp
+    | `case_body ((scope, body), body_tp, body_tp') ->
+      fprintf ppf "@[<v>@[<hv 2>when unifying the inferred type@ %a@]@,@[<hv 2>of the case body@ %a@]@,@[<hv 2>against the inferred type of the other branches@ %a@]@]"
+        (P.print_tp 0) body_tp
+        (P.print_tm 0 scope) body
+        (P.print_tp 0) body_tp'
+    | `decl (c, user_tp, inf_tp) ->
+      fprintf ppf "@[<v>@[<hv 2>when unifying the given type@ %a@]@,of the declaration for `%s'@,@[<hv 2>against the inferred type@ %a@]@]"
+        (P.print_tp 0) user_tp
+        c
+        (P.print_tp 0) inf_tp
+    | `recursive (tm_name, tp) ->
+      fprintf ppf "@[<v>@[<hv 2>in a recursive definition for@ %s@]@,@[<hv 2>with inferred type@ @[%a@]@]@]"
+        tm_name
+        (P.print_tp 0) tp
+
+  let print ppf : t -> unit =
+    let open Format in
+    function
+    | `mismatch (k, t1, t2) ->
+      fprintf ppf "@[<v 2>mismatch.@,@[<2>Expected:%a%a@]@,@[<2>Inferred:%a%a@]@,%a@]"
+        pp_print_space ()
+        (P.print_tp 0) t1
+        pp_print_space ()
+        (P.print_tp 0) t2
+        print_mismatch_kind k
+    | `infinite_type (x, tp) ->
+      fprintf ppf "@[<v 2>cannot construct infinite type.@,Type variable %s occurs in type @[%a@]@]"
+        x
+        (P.print_tp 0) tp
+
+  (* Takes the last `n` elements of the given list.
+  * If there are fewer than n elements in the list, the list is returned as is. *)
+  let last_n (l : 'a list) (n : int) =
+    snd @@ List.fold_right (fun x (n, l) -> if n > 0 then (n - 1, x :: l) else (0, l)) l (n, [])
+
+  let print_term_stack ppf term_stack =
+    let open Format in
+    match last_n term_stack 3 with
+    | [] -> ()
+    | term_stack ->
+      fprintf ppf "@,@[<v>Enclosing terms:@,%a@]"
+        (pp_print_list ~pp_sep: pp_print_cut begin fun ppf (scope, e) ->
+            fprintf ppf "- @[%a@]" (P.print_tm 0 scope) e
+          end) term_stack
+
+  let print_report ppf ({ error; term_stack; loc } : report): unit =
+    Format.fprintf ppf "@[<v 2>%a: type error:@ %a%a@]"
+      Loc.print loc.Loc.Span.start
+      print error
+      print_term_stack term_stack
 end
 
-type 'a result = (TypeError.report, 'a) Result.t
+type 'a result = (Error.report, 'a) Result.t
 
 (* Pushes a term onto the error term stack in case the given Result is an Error. *)
-let push e r = Result.map_error TypeError.(fun r -> { r with term_stack = e :: r.term_stack }) r
+let push e r = Result.map_error Error.(fun r -> { r with term_stack = e :: r.term_stack }) r
 
 let push_scoped env e r = push (Ctx.to_scope env.ctx, e) r
 
 (* Interprets a unification result as a typechecking result. *)
 let unify loc (k : unify_kind) : 'a Unify.result -> 'a result =
-  let f : Unify.unify_error -> TypeError.t = function
+  let f : Unify.unify_error -> Error.t = function
     | `occurs_check (x, tp) -> `infinite_type (x, tp)
     | `mismatch (t1, t2) -> `mismatch (k, t1, t2)
   in
-  Result.map_error (fun err -> TypeError.report loc @@ f err)
+  Result.map_error (fun err -> Error.report loc @@ f err)
 
 let dprintf env = Format.fprintf env.ppf
 

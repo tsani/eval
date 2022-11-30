@@ -32,7 +32,8 @@ module RuntimeError = struct
     | UnboundVariable (env, i) ->
       fprintf ppf "@[<v 2>Unbound variable %d in environment@ %a@]" i P.print_env env
     | ApplyNonClo (v, (sco, e)) ->
-      fprintf ppf "@[<v>@[<v 2>Cannot apply non-closure@ %a@]@,@[<v 2>to argument@ %a@]@]"
+      fprintf ppf "@[<v>@[<v 2>%a: Cannot apply non-closure@ %a@]@,@[<v 2>to argument@ %a@]@]"
+        Loc.print (Term.loc_of_tm e).Loc.Span.start
         (P.print_value 0) v
         (P.print_tm 0 sco) e
     | InfiniteRecursion x ->

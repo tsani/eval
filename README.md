@@ -23,3 +23,6 @@ Done:
 
 To do:
 - Proper build system: currently I build with a bash script.
+- Syntactic sugar: allow things like `fun x y z -> ...` instead of having to
+  repeat `fun`.
+- Compilation?

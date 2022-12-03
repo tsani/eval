@@ -57,7 +57,7 @@ let rec normalize_label = function
 
 module ParseError = struct
   type content =
-    | WrongLiteral of { expected : string; actual : string }
+    | NotExactly of { expected : string; actual : string }
     | Unsatisfied
     | NoMoreChoices
     | NotFollowedBy of parser_label
@@ -72,7 +72,7 @@ module ParseError = struct
   let print ppf (loc, _, content) =
     let open Format in
     let print_content ppf content = match content with
-      | WrongLiteral { expected } -> fprintf ppf "expected literal string `%s'" expected
+      | NotExactly { expected } -> fprintf ppf "expected exactly `%s'" expected
       | Unsatisfied -> fprintf ppf "satisfaction failed"
       | NoMoreChoices -> fprintf ppf "tried all the choices"
       | NotFollowedBy label ->
@@ -271,14 +271,18 @@ let char (c : char) : char t =
   label ("`" ^ String.make 1 c ^ "' character") @@
   satisfy (fun x -> x = c)
 
+(** Parses the next character. *)
+let any_char : char t =
+  satisfy (fun _ -> true)
+
 (* Parses the string given exactly.
    This is done efficiently by simply extracting a substring from the input,
    versus checking one character at a time using `satisfy'.
    The given string must not include any newline characters.
  *)
-let string (str : string) : string t =
+let exact (str : string) : string t =
   let len = String.length str in {
-    label = Label ("literal string `" ^ str ^ "'");
+    label = Label ("exactly `" ^ str ^ "'");
     run = fun r s fail return ->
       let open State in let open Loc in let open Env in
       if s.here.offset + len > String.length r.input then
@@ -286,7 +290,7 @@ let string (str : string) : string t =
       else
         let from_input = String.sub r.input s.here.offset len in
         if str = from_input then return (map_loc (bump len) s) str else
-          fail @@ ParseError.(make s.here `non_fatal @@ WrongLiteral { expected = str; actual = from_input })
+          fail @@ ParseError.(make s.here `non_fatal @@ NotExactly { expected = str; actual = from_input })
   }
 
 (* `p1 |> not_followed_by p2` parses p1 provided that parsing p2 fails after it. *)
@@ -335,22 +339,22 @@ let lword : string t =
 let lexeme (p : 'a t) =
   label' p.label (p <& many whitespace)
 
-(** Parses a literal string ensuring that it isn't isn't a prefix of a bigger symbol. *)
-let symbol s = lexeme (span @@ string s |> not_followed_by symbol)
+(** Parses an exact string ensuring that it isn't isn't a prefix of a bigger symbol. *)
+let symbol s = lexeme (span @@ exact s |> not_followed_by symbol)
 let sym_arrow = symbol "->"
 let sym_pipe = symbol "|"
 let sym_eq = symbol "="
 let sym_colon = symbol ":"
 
-let lparen = lexeme (string "(")
-let rparen = lexeme (string ")")
+let lparen = lexeme (char '(')
+let rparen = lexeme (char ')')
 
 let parenthesized p = between lparen rparen p
 
 (** Parses a literal string ensuring that that string isn't a prefix of a bigger word. *)
 let keyword s =
   label ("keyword `" ^ s ^ "'") @@
-  lexeme (trying ((span @@ string s) |> not_followed_by alphanumeric))
+  lexeme (trying ((span @@ exact s) |> not_followed_by alphanumeric))
 
 let kw_let = keyword "let"
 let kw_fun = keyword "fun"
@@ -360,7 +364,18 @@ let kw_rec = keyword "rec"
 let kw_with = keyword "with"
 let kw_def = keyword "def"
 let kw_type = keyword "type"
-let any_keyword = [kw_let; kw_fun; kw_in; kw_match; kw_rec; kw_with; kw_def; kw_type] |> List.map delay |> choice
+let any_keyword =
+  [kw_let; kw_fun; kw_in; kw_match; kw_rec; kw_with; kw_def; kw_type]
+  |> List.map delay
+  |> choice
+
+let id_true = keyword "true"
+let id_false = keyword "false"
+
+let id_bool = keyword "Bool"
+let id_string = keyword "String"
+let id_char = keyword "Char"
+let id_int = keyword "Int"
 
 let number = lexeme (span raw_number)
 let uident = lexeme (span uword)
@@ -371,7 +386,45 @@ let lident =
 
 (* ***** Complex syntax parsers ***** *)
 
+open Syntax
 open Syntax.External
+
+let builtin_tp : builtin_tp t =
+  choice [
+    (fun _ -> id_bool &> pure Bool);
+    (fun _ -> id_int &> pure Int);
+    (fun _ -> id_string &> pure String);
+    (fun _ -> id_char &> pure Char);
+  ]
+
+let literal : (Loc.Span.t * literal) t =
+  (* TODO escape characters, forbid non-printing characters *)
+  let string_lit_contents = satisfy (fun c -> c <> '"') in
+  let string_lit () =
+    lexeme @@
+    span @@
+    bind (char '"') @@ fun _ ->
+    bind (many string_lit_contents) @@ fun cs ->
+    bind (char '"') @@ fun _ ->
+    pure (StringLit (String.concat "" @@ List.map (String.make 1) cs))
+  in
+  let bool_lit () =
+    alt
+      (fun _ -> bind id_true @@ fun (loc, _) -> pure (loc, BoolLit true))
+      (fun _ -> bind id_false @@ fun (loc, _) -> pure (loc, BoolLit false))
+  in
+  let int_lit () =
+    number |> map (fun (loc, n) -> (loc, IntLit n))
+  in
+  let char_lit () =
+    lexeme @@
+    span @@
+    bind (char '\'') @@ fun _ ->
+    bind any_char @@ fun c -> (* TODO escape characters, forbid non-printing characters *)
+    bind (char '\'') @@ fun _ ->
+    pure (CharLit c)
+  in
+  choice [string_lit; bool_lit; int_lit; char_lit]
 
 let rec typ () : Type.t t =
   let rec named () =
@@ -402,24 +455,30 @@ and atomic_typ () : Type.t t =
 let rec pattern () : Term.pattern t =
   let wildcard () =
     label "wildcard pattern" @@
-    lexeme (span @@ string "_") |> map (fun (loc, _) -> Term.WildcardPattern loc)
+    lexeme (span @@ char '_') |> map (fun (loc, _) -> Term.WildcardPattern loc)
   in
   let variable () =
     label "variable pattern" @@
     lident |> map (fun (loc, x) -> Term.VariablePattern (loc, x))
   in
-  let num () =
-    label "integer literal pattern" @@
-    number |> map (fun (loc, n) -> Term.NumPattern (loc, n))
+  let lit () =
+    label "literal pattern" @@
+    literal |> map (fun (loc, lit) -> Term.LiteralPattern (loc, lit))
   in
+  let const0 () =
+    label "constructor pattern" @@
+    bind uident @@ fun (loc, ctor_name) ->
+    pure Term.(ConstPattern (loc, ctor_name, []))
+  in
+  let atomic () = choice [wildcard; variable; lit; const0; fun _ -> parenthesized @@ force pattern] in
   let const () =
     label "constructor pattern" @@
     bind uident @@ fun (loc, ctor_name) ->
-    bind (many @@ force pattern) @@ fun ps ->
+    bind (many @@ force atomic) @@ fun ps ->
     let loc = List.fold_left (fun acc p -> Loc.Span.join acc @@ Term.loc_of_pattern p) loc ps in
     pure Term.(ConstPattern (loc, ctor_name, ps))
   in
-  choice [wildcard; variable; num; const; fun () -> parenthesized (force pattern)]
+  alt const atomic
 
 let rec last (l : 'a list) (return : 'a -> 'r) (fail : unit -> 'r) : 'r = match l with
   | [] -> fail ()
@@ -427,9 +486,9 @@ let rec last (l : 'a list) (return : 'a -> 'r) (fail : unit -> 'r) : 'r = match 
   | _ :: xs -> last xs return fail
 
 let rec term () : Term.t t =
-  let num () : Term.t t =
+  let lit () : Term.t t =
     label "integer literal" @@
-    lexeme number |> map (fun (loc, n) -> Term.Num (loc, n))
+    literal |> map (fun (loc, lit) -> Term.Lit (loc, lit))
   in
   let variable () : Term.t t =
     label "variable" @@
@@ -439,7 +498,7 @@ let rec term () : Term.t t =
     bind uident @@ fun (loc_const, ctor_name) ->
     pure @@ Term.Const (loc_const, ctor_name, [])
   in
-  let atomic () = choice [num; variable; const0; fun _ -> parenthesized @@ force term] in
+  let atomic () = choice [lit; variable; const0; fun _ -> parenthesized @@ force term] in
   let const () : Term.t t =
     bind uident @@ fun (loc_const, ctor_name) ->
     bind (many @@ force atomic) @@ fun spine ->

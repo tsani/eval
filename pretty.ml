@@ -10,8 +10,14 @@ module Internal = struct
   open Term
   open Type
 
+  let print_builtin_tp ppf = function
+    | Int -> fprintf ppf "Int"
+    | Bool -> fprintf ppf "Bool"
+    | String -> fprintf ppf "String"
+    | Char -> fprintf ppf "Char"
+
   let rec print_tp lvl (ppf : formatter) : Type.t -> unit = function
-    | Int _ -> fprintf ppf "int"
+    | Builtin (_, bt) -> print_builtin_tp ppf bt
     | Arrow (_, t1, t2) ->
       fprintf ppf "%a@[%a@] -> @[%a@]%a"
         lparen (lvl > 0)
@@ -46,12 +52,19 @@ module Internal = struct
     | Rec -> fprintf ppf "rec "
     | NonRec -> ()
 
+  let print_literal ppf = function
+    | BoolLit true -> fprintf ppf "true"
+    | BoolLit false -> fprintf ppf "false"
+    | CharLit c -> fprintf ppf "%c" c (* TODO handle escapes *)
+    | StringLit s -> fprintf ppf "\"%s\"" s (* TODO handle escapes *)
+    | IntLit n -> fprintf ppf "%d" n
+
   let rec collapse_funs : Term.t -> var_name list * Term.t = function
     | Fun (_, (_, x), e) -> let (xs, e) = collapse_funs e in (x :: xs, e)
     | e -> ([], e)
 
   let rec print_tm lvl scope (ppf : formatter) : Term.t -> unit = function
-    | Num (_, n) -> fprintf ppf "%s" (string_of_int n)
+    | Lit (_, lit) -> fprintf ppf "%a" print_literal lit
     | Var (_, i) -> begin match lookup_var scope i with
       | Some x -> fprintf ppf "%s" x
       | None -> fprintf ppf "!%d" i
@@ -115,7 +128,7 @@ module Internal = struct
         ctor_name
         (print_pat_spine 10) pat_spine
         rparen (lvl > 9)
-    | NumPattern (_, n) -> fprintf ppf "%d" n
+    | LiteralPattern (_, lit) -> fprintf ppf "%a" print_literal lit
     | VariablePattern (_, x) -> fprintf ppf "%s" x
     | WildcardPattern _ -> fprintf ppf "_"
 
@@ -130,7 +143,7 @@ module Internal = struct
     fprintf ppf "%a :%a%a" (print_pattern 0) pat pp_print_space () (print_tp 0) t
 
   let rec print_value lvl ppf (v : Value.t) : unit = let open Value in match v with
-    | Num n -> fprintf ppf "%d" n
+    | Lit lit -> print_literal ppf lit
     | Const (ctor_name, val_spine) -> begin match Sugar.decompose_list v with
       | Some l -> fprintf ppf "[@[%a@]]" (pp_print_list ~pp_sep: comma_space (print_value 0)) l
       | None -> match Sugar.decompose_nat v with

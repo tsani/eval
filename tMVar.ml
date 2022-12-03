@@ -48,7 +48,7 @@ let lookup' (sub : sub) x : [ `uninst | `inst of tp ] = match lookup sub x with
 
 (* Computes the list of all tmvars appearing in a type, whether instantiated or not. *)
 let rec all_in : tp -> (loc * tmvar_name) list = function
-  | Int _ -> []
+  | Builtin _ -> []
   | Arrow (_, t1, t2) -> all_in t1 @ all_in t2
   | TVar (_, _) -> []
   | TMVar (loc, x) -> [(loc, x)]
@@ -67,7 +67,7 @@ let all_in_ctx (ctx : Ctx.t) : (loc * tmvar_name) list =
 (* Applies a TMVar substitution to a type.
  * Ensures that any TMVar remaining in the resulting type is uninstantiated. *)
 let rec apply_sub (tmvars : sub) : tp -> tp = function
-  | Int loc -> Int loc
+  | Builtin (loc, bt) -> Builtin (loc, bt)
   | Named (loc, c, ts) -> Named (loc, c, List.map (apply_sub tmvars) ts)
   | Arrow (loc, t1, t2) -> Arrow (loc, apply_sub tmvars t1, apply_sub tmvars t2)
   | TVar (loc, x) -> TVar (loc, x)
@@ -103,7 +103,7 @@ let print_sub ppf (tmvars : sub) : unit =
 (** Decides whether a given uninstantiated tmvar appears in a type *)
 let rec occurs (tmvars : sub) (x : tmvar_name) : tp -> bool = function
   | Named (_, _, ts) -> List.exists (occurs tmvars x) ts
-  | Int _ -> false
+  | Builtin _ -> false
   | TVar (_, _) -> false
   | Arrow (_, t1, t2) -> occurs tmvars x t1 || occurs tmvars x t2
   | TMVar (_, y) -> match lookup' tmvars y with

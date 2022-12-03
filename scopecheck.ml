@@ -69,7 +69,8 @@ let rec check_tp
      location in an external syntax type is given the `literal qualifier when
      translating to internal syntax. *)
   function
-  | E.Type.Int loc -> Result.ok (I.Type.Int (`literal loc))
+  | E.Type.Builtin (loc, bt) ->
+    Result.ok (I.Type.Builtin (`literal loc, bt))
   | E.Type.Arrow (loc, t1, t2) ->
     Result.bind (check_tp lookup_tp lookup_tvar t1) @@ fun t1 ->
     Result.bind (check_tp lookup_tp lookup_tvar t2) @@ fun t2 ->
@@ -89,7 +90,8 @@ let rec check_tp
         Result.ok @@ I.Type.Named (`literal loc, a, ts)
 
 let rec check_pattern lookup_ctor scope = function
-  | E.Term.NumPattern (loc, n) -> Result.ok @@ (scope, I.Term.NumPattern (loc, n))
+  | E.Term.LiteralPattern (loc, lit) ->
+    Result.ok @@ (scope, I.Term.LiteralPattern (loc, lit))
   | E.Term.VariablePattern (loc, x) -> Result.ok @@ (Scope.extend scope x, I.Term.VariablePattern (loc, x))
   | E.Term.WildcardPattern loc -> Result.ok @@ (scope, I.Term.WildcardPattern loc)
   | E.Term.ConstPattern (loc, ctor_name, pat_spine) ->
@@ -115,7 +117,8 @@ let rec check_tm
     (lookup_tm : tm_name -> bool)
     (scope : Scope.t) : E.Term.t -> I.Term.t result =
   function
-  | E.Term.Num (loc, n) -> Result.ok @@ I.Term.Num (loc, n)
+  | E.Term.Lit (loc, lit) ->
+    Result.ok @@ I.Term.Lit (loc, lit)
   | E.Term.Var (loc, x) -> begin match Scope.index_of x scope with
     | Some i -> Result.ok @@ I.Term.Var (loc, i)
     | None when lookup_tm x -> Result.ok @@ I.Term.Ref (loc, x)
@@ -153,7 +156,7 @@ and check_case lookup_ctor lookup_tm scope = function
     Result.ok @@ I.Term.Case (loc, pat, body)
 
 let rec quantify tvars = function
-  | E.Type.Int _ -> tvars
+  | E.Type.Builtin _ -> tvars
   | E.Type.Arrow (_, t1, t2) -> List.fold_left quantify tvars [t1; t2]
   | E.Type.TVar (_, a) -> a :: tvars
   | E.Type.Named (_, _, ts) -> List.fold_left quantify tvars ts

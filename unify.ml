@@ -15,7 +15,7 @@ let _ = Result.Syntax.(Result.Ok 5 $ fun x -> Result.Ok 5)
  * The interpretation of the given types is: expected, actual.
  *)
 let rec types (tmvars : TMVar.sub) : Type.t * Type.t -> TMVar.sub result = function
-  | Int _, Int _ -> Result.ok tmvars
+  | Builtin (_, bt1), Builtin (_, bt2) when bt1 = bt2 -> Result.ok tmvars
   | Arrow (_, t1, t2), Arrow (_, t1', t2') ->
     Result.Syntax.(types tmvars (t1, t1') $ fun tmvars -> types tmvars (t2, t2'))
   | TMVar (_, x), t | t, TMVar (_, x) -> unify_tmvar tmvars x t

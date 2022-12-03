@@ -60,7 +60,7 @@ let debug_print (s : State.t) = Format.fprintf s.debug_ppf
  * Produces None if matching fails.
  *)
 let rec match_pattern (env : Env.t) : Value.t * pattern -> Env.t option = function
-  | Value.Num n1, NumPattern (_, n2) -> if n1 = n2 then Some env else None
+  | Value.Lit l1, LiteralPattern (_, l2) -> if l1 = l2 then Some env else None
   | v, VariablePattern (_, x) -> Some Env.(extend env @@ alloc_entry ~contents: (Some v) x)
   | _, WildcardPattern _ -> Some env
   | Value.Const (ctor_name, spine), ConstPattern (_, pat_ctor_name, pat_spine) -> begin match () with
@@ -77,7 +77,7 @@ let rec match_pattern (env : Env.t) : Value.t * pattern -> Env.t option = functi
   | _ -> None
 
 let rec eval (s : State.t) (env : Env.t) : Term.t -> Value.t = function
-  | Num (_, n) -> Value.Num n
+  | Lit (_, lit) -> Value.Lit lit
   | Var (_, i) -> begin match Env.lookup env i with
     | None -> RuntimeError.unbound_variable env i
     | Some (_, _, r) -> match !r with

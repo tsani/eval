@@ -3,8 +3,9 @@ open Internal
 
 module P = Pretty.Internal
 
+(** This version of loc_of_tp accounts for type variables, and will chase them if necessary. *)
 let loc_of_tp (tmvars : TMVar.sub) (t : Type.t) = let open Type in match TMVar.chase tmvars t with
-  | Int loc -> loc
+  | Builtin (loc, _) -> loc
   | Arrow (loc, _, _) -> loc
   | TVar (loc, _) -> loc
   | Named (loc, _, _) -> loc
@@ -82,7 +83,7 @@ let instantiate (s : infer_state) ((tbinders, tp) : Type.sc) : infer_state * Typ
       | Arrow (loc, t1, t2) -> Arrow (loc, rename_tvars_to_tmvars t1, rename_tvars_to_tmvars t2)
       | Named (loc, c, ts) -> Named (loc, c, List.map rename_tvars_to_tmvars ts)
       | TMVar (loc, x) -> TMVar (loc, x)
-      | Int loc -> Int loc
+      | Builtin (loc, bt) -> Builtin (loc, bt)
     in
     (s, rename_tvars_to_tmvars tp)
 
@@ -257,10 +258,16 @@ let unify loc (k : unify_kind) : 'a Unify.result -> 'a result =
 
 let dprintf env = Format.fprintf env.ppf
 
+let infer_literal = function
+  | IntLit _ -> Int
+  | BoolLit _ -> Bool
+  | CharLit _ -> Char
+  | StringLit _ -> String
+
 let rec infer_tm (env : infer_env) (s : infer_state) : Term.t -> (infer_state * Type.t) result =
   let open Term in let open Type in
   function
-  | Num (loc, _) -> Result.ok (s, Int (`inferred loc))
+  | Lit (loc, lit) -> Result.ok (s, Builtin (`inferred loc, infer_literal lit))
   | Var (_, i) -> begin match lookup_var env.ctx i with
     | None -> raise (Util.Invariant "scopecheck: all variables are bound")
     | Some (_, tpsc) -> Result.ok (instantiate s tpsc)
@@ -401,8 +408,8 @@ and infer_pat (env : infer_env) (s : infer_state) : Term.pattern -> (infer_env *
   | VariablePattern (loc, x) ->
     let s, p = fresh_tmvar s "p" in
     Result.ok Type.(extend_ctx env (x, mono @@ TMVar (`inferred loc, p)), s, TMVar (`inferred loc, p))
-  | NumPattern (loc, _) ->
-    Result.ok (env, s, Type.Int (`inferred loc))
+  | LiteralPattern (loc, lit) ->
+    Result.ok (env, s, Type.Builtin (`inferred loc, infer_literal lit))
   | ConstPattern (loc, c, pat_spine) ->
     let s, ctor_tp = instantiate_ctor_type env s c in
     Result.bind (infer_ctor_from_pat_spine loc env s pat_spine) @@ fun (env, s, inferred_ctor_tp, result_tp) ->

@@ -37,16 +37,25 @@ module Scope = struct
     go 0
 end
 
+(** Built-in types. *)
+type builtin_tp = Int | Char | String | Bool
+
+type literal =
+  | IntLit of int
+  | CharLit of char
+  | StringLit of string
+  | BoolLit of bool
+
 module External = struct
   module Type = struct
     type t =
-      | Int of Loc.span
+      | Builtin of Loc.span * builtin_tp
       | Arrow of Loc.span * t * t
       | TVar of Loc.span * tvar_name
       | Named of Loc.span * tp_name * t list
 
     let loc_of_tp = function
-      | Int loc -> loc
+      | Builtin (loc, _) -> loc
       | Arrow (loc, _, _) -> loc
       | TVar (loc, _) -> loc
       | Named (loc, _, _) -> loc
@@ -55,20 +64,21 @@ module External = struct
   module Term = struct
     type loc = Loc.span
 
+    (** The syntax of patterns, which appear on the left of arrows in match-expression cases. *)
     type pattern =
+      | LiteralPattern of Loc.span * literal
       | ConstPattern of Loc.span * ctor_name * pattern list
-      | NumPattern of Loc.span * int
       | VariablePattern of Loc.span * var_name
       | WildcardPattern of Loc.span
 
     let loc_of_pattern = function
       | ConstPattern (loc, _, _) -> loc
-      | NumPattern (loc, _) -> loc
+      | LiteralPattern (loc, _) -> loc
       | VariablePattern (loc, _) -> loc
       | WildcardPattern loc -> loc
 
     type t =
-      | Num of loc * int
+      | Lit of loc * literal
       | Var of loc * var_name
       (* in external syntax, we can't tell apart a local var ref from a ref to
       another definition, so there is no case for "ref" *)
@@ -84,7 +94,7 @@ module External = struct
      and case = Case of Loc.span * pattern * t
 
      let loc_of_tm = function
-       | Num (loc, _) -> loc
+       | Lit (loc, _) -> loc
        | Var (loc, _) -> loc
        | Fun (loc, _, _) -> loc
        | App (loc, _, _) -> loc
@@ -144,21 +154,23 @@ module Internal = struct
       | `fake (** The location is completely made up. *)
     ]
 
-    type t
-      = Int of loc
+    type t =
+      | Builtin of loc * builtin_tp
       | Arrow of loc * t * t
       | TVar of loc * tvar_name
       | TMVar of loc * tmvar_name (* often, the location of a TMVar is fake *)
       | Named of loc * tp_name * t list (* an identifier for a user-defined data type and a list of type parameters *)
 
-    (** Try to get the location associated to a type. This fails if the type is a TMVar, because at
-        this point we don't know anything about TMVar substitutions. *)
-    let loc_of_tp : t -> loc option = function
-      | Int loc -> Some loc
-      | Arrow (loc, _, _) -> Some loc
-      | TVar (loc, _) -> Some loc
-      | TMVar _ -> None
-      | Named (loc, _, _) -> Some loc
+    (** Gets the location of a type. This implementation doesn't know anything
+    about type variable instantiations, so it will report the location of the
+    TMVar if it encounters one. Usually, these locations are fake or refer to a
+    term, and so are rarely meaningful to a user. *)
+    let loc_of_tp : t -> loc = function
+      | Builtin (loc, _) -> loc
+      | Arrow (loc, _, _) -> loc
+      | TVar (loc, _) -> loc
+      | TMVar (loc, _) -> loc
+      | Named (loc, _, _) -> loc
 
     (* A 'type scheme' is a bunch of quantifiers together with a type.
     * This is in contrast to allowing arbitrary foralls to appear anywhere in a type.
@@ -193,6 +205,7 @@ module Internal = struct
 
     type ctx = t
 
+    (** Erases all type annotations a context, simply leaving names. *)
     let to_scope ctx = List.map (fun (x, _) -> x) ctx
   end
 
@@ -201,8 +214,14 @@ module Internal = struct
     type loc = Loc.span
     let fake_loc = Loc.Span.fake
 
+    type pattern =
+      | ConstPattern of Loc.span * ctor_name * pattern list
+      | LiteralPattern of Loc.span * literal
+      | VariablePattern of Loc.span * var_name
+      | WildcardPattern of Loc.span
+
     type t
-      = Num of loc * int
+      = Lit of loc * literal
       | Var of loc * index (* The span refers to the span of the original named variable *)
       | Ref of loc * tm_name
       | Fun of loc * (loc * var_name) * t
@@ -216,12 +235,6 @@ module Internal = struct
     and case =
       | Case of Loc.span * pattern * t
 
-    and pattern =
-      | ConstPattern of Loc.span * ctor_name * pattern list
-      | NumPattern of Loc.span * int
-      | VariablePattern of Loc.span * var_name
-      | WildcardPattern of Loc.span
-
     type term = t
 
     let case_body (Case (_, _, e)) = e
@@ -232,13 +245,13 @@ module Internal = struct
       let rec go acc p = match p with
         | WildcardPattern _ -> acc
         | VariablePattern (_, x) -> Scope.extend acc x
-        | NumPattern (_, _) -> acc
+        | LiteralPattern (_, _) -> acc
         | ConstPattern (_, _, ps) -> List.fold_left go acc ps
       in
       go
 
     let loc_of_tm = function
-      | Num (loc, _) -> loc
+      | Lit (loc, _) -> loc
       | Var (loc, _) -> loc
       | Ref (loc, _) -> loc
       | Fun (loc, _, _) -> loc
@@ -249,7 +262,7 @@ module Internal = struct
 
     let loc_of_pattern = function
       | ConstPattern (loc, _, _) -> loc
-      | NumPattern (loc, _) -> loc
+      | LiteralPattern (loc, _) -> loc
       | VariablePattern (loc, _) -> loc
       | WildcardPattern loc -> loc
   end
@@ -257,7 +270,7 @@ module Internal = struct
   (* A value is the result of evaluating a term. *)
   module Value = struct
     type t =
-      | Num of int
+      | Lit of literal
       | Const of ctor_name * spine
       | Clo of env * var_name * Term.t
 
@@ -431,7 +444,7 @@ module Internal = struct
     open Type
 
     let v i = Var (Loc.Span.fake, i)
-    let n n = Num (Loc.Span.fake, n)
+    let n n = Lit (Loc.Span.fake, IntLit n)
     let r name = Ref (Loc.Span.fake, name)
     let lam x e = Fun (Loc.Span.fake, (Loc.Span.fake, x), e)
     let rec lams xs e = match xs with

@@ -122,7 +122,7 @@ module Internal = struct
     | Case (_, pat, body) ->
       fprintf ppf "@[<hv 2>| %a ->@ %a@]"
         (print_pattern 0) pat
-        (print_tm 0 (extend_with_pattern_vars scope pat)) body
+        (print_tm 1 (extend_with_pattern_vars scope pat)) body
 
   and print_cases scope ppf : case list -> unit = function
     | [] -> ()

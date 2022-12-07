@@ -276,7 +276,25 @@ let infer_literal = function
   | CharLit _ -> Char
   | StringLit _ -> String
 
-let infer_prim env s prim = Util.not_implemented ()
+let infer_prim loc env s =
+  let open Prim in
+  let open Type in
+  let builtin prim = Builtin (`fake, prim) in
+  function
+  | Eq ->
+    let s, x = fresh_tmvar s "a" in
+    let a = TMVar (`inferred loc, x) in
+    s, arrows [a; a] (builtin Bool)
+  | Plus -> s, arrows [builtin Int; builtin Int] (builtin Int)
+  | Times -> s, arrows [builtin Int; builtin Int] (builtin Int)
+  | Div -> s, arrows [builtin Int; builtin Int] (builtin Int)
+  | Neg -> s, arrows [builtin Int] (builtin Int)
+  | Not -> s, arrows [builtin Bool] (builtin Bool)
+  | And -> s, arrows [builtin Bool; builtin Bool] (builtin Bool)
+  | Or -> s, arrows [builtin Bool; builtin Bool] (builtin Bool)
+  | CharAt -> s, arrows [builtin String; builtin Int] (builtin Char)
+  | SubString -> s, arrows [builtin String; builtin Int; builtin Int] (builtin String)
+  | Lt -> s, arrows [builtin Int; builtin Int] (builtin Bool)
 
 let infer_head (env : infer_env) (s : infer_state) : Term.head -> (infer_state * Type.t) result =
   let open Term in let open Type in
@@ -292,7 +310,7 @@ let infer_head (env : infer_env) (s : infer_state) : Term.head -> (infer_state *
         | None -> Util.invariant "every ref's type is known"
         | Some typ -> Result.ok (instantiate s typ)
     end
-  | Prim (_, prim) -> infer_prim env s prim
+  | Prim (loc, prim) -> Result.ok @@ infer_prim loc env s prim
 
 
 let rec infer_tm (env : infer_env) (s : infer_state) : Term.t -> (infer_state * Type.t) result =

@@ -38,7 +38,7 @@ module Scope = struct
 end
 
 module Prim = struct
-  type t = Eq | Lt | Not | And | Or | CharAt | SubString
+  type t = Eq | Lt | Not | And | Or | CharAt | SubString | Plus | Times | Neg | Div
 end
 
 (** Built-in types. *)
@@ -199,6 +199,9 @@ module Internal = struct
 
     (* Constructs a polytype from a list of binders and a monotype. *)
     let poly (tvar_binders : tvar_name list) (tp : t) : sc = (tvar_binders, tp)
+
+    (** Constructs an arrow type in a nice way. *)
+    let arrows = List.fold_right (fun a ret -> Arrow (`fake, a, ret))
   end
 
   (* A context associates to variables a type, so we can typecheck them. *)

@@ -55,11 +55,16 @@ let rec normalize_label = function
   | Label l -> [l]
   | OneOf ls -> List.fold_right (fun l ss -> normalize_label l @ ss) ls []
 
+let print_parser_label ppf lbl =
+  let open Format in
+  pp_print_list ~pp_sep: (fun ppf () -> fprintf ppf ",@ ") (fun s -> fprintf ppf "%s") ppf (normalize_label lbl)
+
+
 module ParseError = struct
   type content =
     | NotExactly of { expected : string; actual : string }
     | Unsatisfied
-    | NoMoreChoices
+    | NoMoreChoices of parser_label
     | NotFollowedBy of parser_label
     | Expected of parser_label
     | Unexpected of parser_label
@@ -74,16 +79,10 @@ module ParseError = struct
     let print_content ppf content = match content with
       | NotExactly { expected } -> fprintf ppf "expected exactly `%s'" expected
       | Unsatisfied -> fprintf ppf "satisfaction failed"
-      | NoMoreChoices -> fprintf ppf "tried all the choices"
-      | NotFollowedBy label ->
-        fprintf ppf "not followed by @[%a@]"
-          (pp_print_list ~pp_sep: (fun ppf () -> fprintf ppf " ") (fun s -> fprintf ppf "%s")) (normalize_label label)
-      | Expected label ->
-        fprintf ppf "expected @[%a@]"
-          (pp_print_list ~pp_sep: (fun ppf () -> fprintf ppf " ") (fun s -> fprintf ppf "%s")) (normalize_label label)
-      | Unexpected label ->
-        fprintf ppf "unexpected @[%a@]"
-          (pp_print_list ~pp_sep: (fun ppf () -> fprintf ppf " ") (fun s -> fprintf ppf "%s")) (normalize_label label)
+      | NoMoreChoices label -> fprintf ppf "tried all the choices @[%a@]" print_parser_label label
+      | NotFollowedBy label -> fprintf ppf "not followed by @[%a@]" print_parser_label label
+      | Expected label -> fprintf ppf "expected @[%a@]" print_parser_label label
+      | Unexpected label -> fprintf ppf "unexpected @[%a@]" print_parser_label label
     in
     fprintf ppf "%s:%d:%d: parse error: @[%a@]"
       loc.Loc.filename
@@ -226,9 +225,10 @@ let sep_by0 sep p =
   end
 
 let choice (ps : 'a t susp list) : 'a t =
-  force @@ List.fold_right (fun p acc -> delay @@ alt p acc) ps (fun () -> fail @@ ParseError.NoMoreChoices)
+  force @@ List.fold_right (fun p acc -> delay @@ alt p acc) ps
+    (fun () -> fail @@ ParseError.NoMoreChoices (OneOf (List.map (fun p -> (force p).label) ps)))
 
-(* Look at the character at the parser's current position. *)
+(** Look at the character at the parser's current position. *)
 let peek : char t = {
   label = Anon;
   run = fun r s fail return ->
@@ -485,6 +485,10 @@ let rec last (l : 'a list) (return : 'a -> 'r) (fail : unit -> 'r) : 'r = match 
   | [x] -> return x
   | _ :: xs -> last xs return fail
 
+let first (l : 'a list) (return : 'a -> 'r) (fail : unit -> 'r) : 'r = match l with
+  | [] -> fail ()
+  | x :: _ -> return x
+
 let head () : Term.head t =
   let variable () =
     label "variable" @@
@@ -552,11 +556,13 @@ let rec term () : Term.t t =
     )
   in
   let app () =
+    label "application" @@
     bind (force head) @@ fun tH ->
-    bind (some (force atomic)) @@ fun tS ->
-    pure @@ Term.App (Loc.Span.join (Term.loc_of_head tH) (Term.loc_of_tm @@ List.hd tS), tH, tS)
+    bind (many (force atomic)) @@ fun tS ->
+    let l = Term.loc_of_head tH in
+    pure @@ Term.App (Loc.Span.join (Term.loc_of_head tH) (first tS Term.loc_of_tm (fun _ -> l)), tH, tS)
   in
-  choice [let_; match_; lam; app]
+  choice [let_; match_; lam; app; fun _ -> parenthesized @@ force term]
 
 let tm_decl : Decl.tm t =
   bind kw_def @@ fun (loc_def, _) ->

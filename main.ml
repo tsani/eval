@@ -354,33 +354,6 @@ let read_file filename =
   close_in h;
   s
 
-let print_evaluated_program ppf (sg_t, sg_e, program) =
-  let open Format in
-  let open Syntax.Internal in
-  let print_tvar_binders =
-    pp_print_list ~pp_sep: (fun ppf _ -> ()) (fun ppf x -> fprintf ppf " %s" x)
-  in
-  let print_ctor ppf Decl.({ name; fields }) =
-    fprintf ppf "| @[<hv 2>%s@ @[%a@]@]"
-      name
-      (pp_print_list ~pp_sep: pp_print_space (P.print_tp 10)) fields
-  in
-  let print_decl ppf = function
-    | Decl.(TpDecl { tvar_binders; name; constructors }) ->
-      fprintf ppf "@[<hv 2>type %s%a =@ %a@]"
-        name
-        print_tvar_binders tvar_binders
-        (pp_print_list ~pp_sep: pp_print_cut print_ctor) constructors
-    | Decl.(TmDecl { name; recursive }) ->
-      let Decl.({ typ = Some (_, typ); }) = Signature.lookup_tm' name sg_t in
-      let Decl.({ body = Some body }) = Signature.lookup_tm' name sg_e in
-      fprintf ppf "@[<hv 2>val %s : @[%a@] =@ @[%a@]@]"
-        name
-        (P.print_tp 0) typ
-        (P.print_value 0) body
-  in
-  fprintf ppf "@[<v>%a@]" (pp_print_list ~pp_sep: pp_print_cut print_decl) program
-
 let main () =
   let filename = Array.get Sys.argv 1 in
   let input = read_file filename in
@@ -401,8 +374,11 @@ let main () =
       | Result.Ok sg_t ->
         fprintf ppf "Typechecking succeeded.@.";
         match Eval.(program (State.empty epf)) program with
-        | Result.Error e -> fprintf ppf "@[<v 2>Runtime error.@,%a@]@." Eval.RuntimeError.print e
+        | Result.Error (loc, e) ->
+          fprintf ppf "@[<hv 2>%a: runtime error:@ %a@]@."
+            Loc.print loc.Loc.Span.start
+            Eval.RuntimeError.print e
         | Result.Ok Eval.State.({ sg = sg_e }) ->
-          fprintf ppf "Evaluation finished.@.%a@." print_evaluated_program (sg_t, sg_e, program)
+          fprintf ppf "Evaluation finished.@.%a@." P.print_evaluated_program (sg_t, sg_e, program)
 
 let _ = main ()

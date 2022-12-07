@@ -130,8 +130,8 @@ type unify_kind = [
   (* Unifying the subject of an application with a function type. *)
   | `app of Scope.t * Term.t
 
-  (* Unifying a synthesized spine function type against the constructor type. *)
-  | `ctor_spine of Scope.t * (ctor_name * Type.t) * (Term.spine * Type.t)
+  (* Unifying a synthesized function type against the head type. *)
+  | `head_spine of Scope.t * (Term.head * Type.t) * (Term.spine * Type.t)
 
   (* Unifying a synthesized pattern-spine function type against the constructor type. *)
   | `ctor_pat_spine of (ctor_name * Type.t) * (Term.pattern list * Type.t)
@@ -152,7 +152,13 @@ module Error = struct
     | `infinite_type of tmvar_name * Type.t
   ]
 
-  type term_stack_entry = Scope.t * Term.t
+  type term = [
+    | `term of Term.t
+    | `head of Term.head
+    | `spine of Term.spine
+  ]
+
+  type term_stack_entry = Scope.t * term
   type term_stack = term_stack_entry list
 
   type report = {
@@ -168,7 +174,6 @@ module Error = struct
 
   let report loc (error : t) = { loc; error; term_stack = [] }
 
-
   let print_mismatch_kind ppf : unify_kind -> unit =
     let open Format in
     function
@@ -176,13 +181,12 @@ module Error = struct
       fprintf ppf "@[<v>@[<v 2>when unifying the match scrutinee@,@[%a@]@]@,@[<v 2>with the pattern@,@[%a@]@]@]"
         (P.print_tm_tp scope) scru_and_tp
         P.print_pat_tp pat_and_tp
-    | `app (scope, e) -> fprintf ppf "when expecting @[%a@] to have a function type." (P.print_tm 0 scope) e
-    | `ctor_spine (scope, (ctor, ctor_tp), (sp, inf_ctor_tp)) ->
-      fprintf ppf "@[<v>@[<hv 2>when matching constructor@ @[<hv 2>%s :@ %a@]@]@,@[<hv 2>with spine@ %a@]@,@[<hv 2>for which the inferred constructor type is@ %a@]@]"
-        ctor
-        (P.print_tp 0) ctor_tp
-        (P.print_spine 10 scope) sp
-        (P.print_tp 0) inf_ctor_tp
+    (* | `app (scope, e) -> fprintf ppf "when expecting @[%a@] to have a function type." (P.print_tm 0 scope) e *)
+    | `head_spine (scope, (tH, a1), (tS, a2)) ->
+      fprintf ppf "@[<v>@[<hv 2>when checking application@ %a@]@,@[<hv 2>inferred head type@ %a@]@,@[<hv 2>synthesized head type from spine@ %a@]@]"
+        (P.print_app 0 scope) (tH, tS)
+        (P.print_tp 0) a1
+        (P.print_tp 0) a2
     | `ctor_pat_spine ((ctor, ctor_tp), (pat_sp, inf_ctor_tp)) ->
       fprintf ppf "@[<v>@[<hv 2>when matching constructor@ @[<hv 2>%s :@ %a@]@]@,@[<hv 2>with pattern spine@ %a@]@,@[hv 2>for which the inferred constructor type is@ %a@]@]"
         ctor
@@ -224,6 +228,11 @@ module Error = struct
   let last_n (l : 'a list) (n : int) =
     snd @@ List.fold_right (fun x (n, l) -> if n > 0 then (n - 1, x :: l) else (0, l)) l (n, [])
 
+  let print_term scope ppf : term -> unit = function
+    | `term t -> P.print_tm 0 scope ppf t
+    | `head tH -> P.print_app 0 scope ppf (tH, [])
+    | `spine tS -> P.print_app 0 scope ppf (Sugar.r ".", tS)
+
   let print_term_stack ppf term_stack =
     let open Format in
     match last_n term_stack 3 with
@@ -231,7 +240,7 @@ module Error = struct
     | term_stack ->
       fprintf ppf "@,@[<v>Enclosing terms:@,%a@]"
         (pp_print_list ~pp_sep: pp_print_cut begin fun ppf (scope, e) ->
-            fprintf ppf "- @[%a@]" (P.print_tm 0 scope) e
+            fprintf ppf "- @[%a@]" (print_term scope) e
           end) term_stack
 
   let print_report ppf ({ error; term_stack; loc } : report): unit =
@@ -256,6 +265,9 @@ let unify loc (k : unify_kind) : 'a Unify.result -> 'a result =
   in
   Result.map_error (fun err -> Error.report loc @@ f err)
 
+let set_tmvars s (k : infer_state -> 'a result) : TMVar.sub -> 'a result = fun tmvars ->
+  k { s with tmvars }
+
 let dprintf env = Format.fprintf env.ppf
 
 let infer_literal = function
@@ -264,20 +276,30 @@ let infer_literal = function
   | CharLit _ -> Char
   | StringLit _ -> String
 
+let infer_prim env s prim = Util.not_implemented ()
+
+let infer_head (env : infer_env) (s : infer_state) : Term.head -> (infer_state * Type.t) result =
+  let open Term in let open Type in
+  function
+  | Const (_, c) -> Result.ok @@ instantiate_ctor_type env s c
+  | Var (_, i) -> begin match lookup_var env.ctx i with
+      | None -> Util.invariant "scopecheck: all variables are bound"
+      | Some (_, tpsc) -> Result.ok @@ instantiate s tpsc
+    end
+  | Ref (_, f) -> begin match Signature.lookup_tm f env.sg with
+      | None -> Util.invariant "scopecheck: all references are resolved"
+      | Some ({ typ }) -> match typ with
+        | None -> Util.invariant "every ref's type is known"
+        | Some typ -> Result.ok (instantiate s typ)
+    end
+  | Prim (_, prim) -> infer_prim env s prim
+
+
 let rec infer_tm (env : infer_env) (s : infer_state) : Term.t -> (infer_state * Type.t) result =
   let open Term in let open Type in
   function
   | Lit (loc, lit) -> Result.ok (s, Builtin (`inferred loc, infer_literal lit))
-  | Var (_, i) -> begin match lookup_var env.ctx i with
-    | None -> raise (Util.Invariant "scopecheck: all variables are bound")
-    | Some (_, tpsc) -> Result.ok (instantiate s tpsc)
-  end
-  | Ref (_, c) -> begin match Signature.lookup_tm c env.sg with
-    | None -> raise (Util.Invariant "scopecheck: all references are resolved")
-    | Some ({ typ }) -> match typ with
-      | None -> Util.invariant "every ref's type is known"
-      | Some typ -> Result.ok (instantiate s typ)
-  end
+                        (*
   | Const (loc, c, spine) ->
     let s, ctor_tp = instantiate_ctor_type env s c in
     Result.bind (infer_ctor_from_spine loc env s spine) @@ fun (s, inferred_ctor_tp, result_tp) ->
@@ -290,67 +312,57 @@ let rec infer_tm (env : infer_env) (s : infer_state) : Term.t -> (infer_state * 
         (Unify.types s.tmvars (ctor_tp, inferred_ctor_tp))
     end @@ fun tmvars ->
     Result.ok ({ s with tmvars }, result_tp)
+                           *)
   | Fun (loc, (loc_x, x), e) ->
     let s, a = fresh_tmvar s "a" in
     let tp_a = TMVar (`inferred loc_x, a) in
     let env = extend_ctx env @@ (x, mono tp_a) in
     dprintf env "@[<hv 2>Entering function.@ ";
-    Result.bind (push_scoped env e @@ infer_tm env s e) @@ fun (s, tp_b) ->
+    Result.bind (push_scoped env (`term e) @@ infer_tm env s e) @@ fun (s, tp_b) ->
     let arr = Arrow (`inferred loc, tp_a, tp_b) in
     dprintf env "@]@[<v 2>Inferred function type@ %a@]@," (P.print_tp 0) (TMVar.apply_sub s.tmvars arr);
     Result.ok (s, arr)
-  | App (loc, e1, e2) ->
-    Result.bind (push_scoped env e1 @@ infer_tm env s e1) @@ fun (s, f_tp) ->
-    Result.bind (push_scoped env e2 @@ infer_tm env s e2) @@ fun (s, arg_tp) ->
-    let s, x = fresh_tmvar s "a" in
-    let inferred_f_tp =
-      let loc = loc_of_tm e1 in
-      Arrow (`inferred loc, arg_tp, TMVar (`inferred loc, x))
-    in
-    dprintf env "@[<v>@[<v 2>Unify inferred function type@ %a@]@ @[<v 2>with expected function type@ %a@]@]@,"
-      (P.print_tp 0) (TMVar.apply_sub s.tmvars inferred_f_tp)
-      (P.print_tp 0) (TMVar.apply_sub s.tmvars f_tp);
+  | App (loc, tH, tS) ->
+    Result.bind (push_scoped env (`head tH) @@ infer_head env s tH) @@ fun (s, aH) ->
+    Result.bind (push_scoped env (`spine tS) @@ infer_from_spine loc env s tS) @@ fun (s, aS, a_ret) ->
     Result.bind begin
       unify loc
-        (`app (Ctx.to_scope env.ctx, e1))
-        (Unify.types s.tmvars (f_tp, inferred_f_tp))
-    end @@ fun tmvars ->
-    Result.ok ({ s with tmvars }, TMVar (`inferred loc, x))
-  | Match (match_loc, e1, cases) ->
+        (`head_spine (Ctx.to_scope env.ctx, (tH, aH), (tS, aS)))
+        (Unify.types s.tmvars (aH, aS))
+    end @@ set_tmvars s @@ fun s ->
+    Result.ok (s, a_ret)
+  | Match (match_loc, t, cases) ->
     let open Result in
-    bind (push_scoped env e1 @@ infer_tm env s e1) @@ fun (s, scru_tp) ->
+    bind (push_scoped env (`term t) @@ infer_tm env s t) @@ fun (s, a_scru) ->
     (* idea: synthesize a fresh tmvar whose type will be the type of all the case bodies
        then, when we infer the type of a case body, we unify its type with this TMVar.
        This will arrange that all case body types get unified together.
        This TMVar is the type of the whole match-expression. *)
     let s, x = fresh_tmvar s "b" in
     let rec go s = function
-      | [] -> Result.ok s
-      | Case (loc, pat, body) :: cases ->
-        dprintf env "@[<hv 2>Infer type of pattern@ %a@]@," (P.print_pattern 0) pat;
-        bind (infer_pat env s pat) @@ fun (env', s, pat_tp) ->
-        let scru_tp' = TMVar.apply_sub s.tmvars scru_tp in
-        let u_pat = Unify.types s.tmvars (scru_tp, pat_tp) in
+      | [] -> ok s
+      | Case (loc, p, t_body) :: cases ->
+        dprintf env "@[<hv 2>Infer type of pattern@ %a@]@," (P.print_pattern 0) p;
+        bind (infer_pat env s p) @@ fun (env', s, aP) ->
         bind begin
           unify
-            (loc_of_pattern pat)
-            (`scru_pat (Ctx.to_scope env.ctx, (e1, scru_tp'), (pat, pat_tp)))
-            u_pat
-        end @@ fun tmvars ->
+            (loc_of_pattern p)
+            (`scru_pat (Ctx.to_scope env.ctx, (t, a_scru), (p, aP)))
+            (Unify.types s.tmvars (a_scru, aP))
+        end @@ set_tmvars s @@ fun s ->
         dprintf env "Inferring body type.@,";
-        bind (infer_tm env' { s with tmvars } body) @@ fun (s, body_tp) ->
-        let body_tp' = TMVar.apply_sub s.tmvars body_tp in
-        let other_body_tp = TMVar.apply_sub s.tmvars (TMVar (`inferred match_loc, x)) in
+        bind (infer_tm env' s t_body) @@ fun (s, a_body) ->
+        let a_body' = TMVar.apply_sub s.tmvars a_body in
+        let a_other_body = TMVar.apply_sub s.tmvars (TMVar (`inferred match_loc, x)) in
         dprintf env "@[<hv 2>@[<hv 2>Unifying body types@ %a@]@ @[<hv 2>and@ %a@]@]@,"
-          (P.print_tp 0) body_tp'
-          (P.print_tp 0) other_body_tp;
+          (P.print_tp 0) a_body'
+          (P.print_tp 0) a_other_body;
         bind begin
           unify
             match_loc
-            (`case_body ((Ctx.to_scope env.ctx, body), body_tp', other_body_tp))
-            (Unify.types s.tmvars (other_body_tp, body_tp'))
-        end @@ fun tmvars ->
-        go { s with tmvars } cases
+            (`case_body ((Ctx.to_scope env.ctx, t_body), a_body', a_other_body))
+            (Unify.types s.tmvars (a_other_body, a_body))
+        end @@ set_tmvars s @@ fun s -> go s cases
     in
     dprintf env "Processing match cases@,";
     bind (go s cases) @@ fun s ->
@@ -361,7 +373,7 @@ let rec infer_tm (env : infer_env) (s : infer_state) : Term.t -> (infer_state * 
     (* in the env for inferring the type of x = e1, we introduce a binding x : T
     where T = a#n, that is a fresh TMVar.*)
     let env' = extend_ctx env @@ (x, mono (TMVar (`inferred loc_x, b))) in
-    Result.bind (push_scoped env' e1 @@ infer_tm env' s e1) @@ fun (s, scru_tp) ->
+    Result.bind (push_scoped env' (`term e1) @@ infer_tm env' s e1) @@ fun (s, scru_tp) ->
     (* Now let's go back to the original env and normalize the types. *)
     let env = apply_sub_to_ctx s.tmvars env in
     (* Collect all the tmvars that were around before we went to infer the type of e1. *)
@@ -370,15 +382,15 @@ let rec infer_tm (env : infer_env) (s : infer_state) : Term.t -> (infer_state * 
     let tp_sc = generalize outer_tmvars scru_tp in
     (* Form a new version of env', but this time using the generalized type of e1 for x. *)
     let env = extend_ctx env (x, tp_sc) in
-    push_scoped env e2 @@ infer_tm env s e2
+    push_scoped env (`term e2) @@ infer_tm env s e2
   | Let (loc, NonRec, (loc_x, x), e1, e2) ->
-    Result.bind (push_scoped env e1 @@ infer_tm env s e1) @@ fun (s, scru_tp) ->
+    Result.bind (push_scoped env (`term e1) @@ infer_tm env s e1) @@ fun (s, scru_tp) ->
     let env = apply_sub_to_ctx s.tmvars env in
     let scru_tp = TMVar.apply_sub s.tmvars scru_tp in
     let outer_tmvars = TMVar.all_in_ctx env.ctx in
     let tp_sc = generalize outer_tmvars scru_tp in
     let env = extend_ctx env (x, tp_sc) in
-    push_scoped env e2 @@ infer_tm env s e2
+    push_scoped env (`term e2) @@ infer_tm env s e2
 
 (* Infers the type of a function this spine would be applicable to.
  * infer_ctor_from_spine E S sp = (S', T_f, T_r)
@@ -386,15 +398,15 @@ let rec infer_tm (env : infer_env) (s : infer_state) : Term.t -> (infer_state * 
  * and each T_i is inferred from the corresponding sp_i
  * and T_r is a fresh TMVar
  *)
-and infer_ctor_from_spine loc
+and infer_from_spine loc
     (env : infer_env) (s : infer_state) : Term.spine -> (infer_state * Type.t * Type.t) result =
   function
   | [] ->
     let s, x = fresh_tmvar s "s" in
     Result.ok @@ Type.(s, TMVar (`inferred loc, x), TMVar (`inferred loc, x))
   | e :: es ->
-    Result.bind (push_scoped env e @@ infer_tm env s e) @@ fun (s, arg_tp) ->
-    Result.bind (infer_ctor_from_spine loc env s es) @@ fun (s, f_tp, result_tp) ->
+    Result.bind (push_scoped env (`term e) @@ infer_tm env s e) @@ fun (s, arg_tp) ->
+    Result.bind (infer_from_spine loc env s es) @@ fun (s, f_tp, result_tp) ->
     Result.ok (s, Type.Arrow (`inferred (Loc.Span.join loc (Term.loc_of_tm e)), arg_tp, f_tp), result_tp)
 
 (* Infers the type of a pattern. The pattern type must then be unified with the scrutinee type.

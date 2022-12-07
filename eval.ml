@@ -28,40 +28,35 @@ module RuntimeError = struct
     | InfiniteLetRec of var_name
     | PatternMatchingFailed of Value.t * Term.pattern list
 
-  let print ppf : t Loc.Span.d -> unit = let open Format in function
-    | loc, UnboundVariable (env, i) ->
-      fprintf ppf "@[<v 2>%a: Unbound variable %d in environment@ %a@]"
-        Loc.print loc.Loc.Span.start
+  let print ppf : t -> unit = let open Format in function
+    | UnboundVariable (env, i) ->
+      fprintf ppf "@[<v 2>unbound variable %d in environment@ %a@]"
         i
         P.print_env env
-    | loc, ApplyNonClo (v) ->
-      fprintf ppf "@[<v>%a: Cannot apply non-closure@ %a@]"
-        Loc.print loc.Loc.Span.start
+    | ApplyNonClo (v) ->
+      fprintf ppf "@[<v>cannot apply non-closure@ %a@]"
         (P.print_value 0) v
 
-    | loc, InfiniteRecursion x ->
-      fprintf ppf "%a: infinite recursion detected in top-level definition for %s"
-        Loc.print loc.Loc.Span.start
+    | InfiniteRecursion x ->
+      fprintf ppf "infinite recursion detected in top-level definition for %s"
         x
 
-    | loc, InfiniteLetRec x ->
-      fprintf ppf "%a: infinite recursion detected in local definition, for %s"
-        Loc.print loc.Loc.Span.start
+    | InfiniteLetRec x ->
+      fprintf ppf "infinite recursion detected in local definition, for %s"
         x
 
-    | loc, PatternMatchingFailed (v, pats) ->
-      fprintf ppf "@[<hv>@[<hv 2>%a: Failed to match term@ %a]@ @[<v 2>against any of the patterns:@ %a@]@]"
-        Loc.print loc.Loc.Span.start
+    | PatternMatchingFailed (v, pats) ->
+      fprintf ppf "@[<hv>@[<hv 2>failed to match term@ %a]@ @[<v 2>against any of the patterns:@ %a@]@]"
         (P.print_value 0) v
         (pp_print_list ~pp_sep: pp_print_cut (fun ppf -> fprintf ppf "- @[%a@]" (P.print_pattern 0))) pats
 
-  exception E of t
+  exception E of t Loc.Span.d
 
-  let unbound_variable env index = raise (E (UnboundVariable (env, index)))
-  let apply_non_clo e = raise (E (ApplyNonClo (e)))
-  let infinite_recursion x = raise (E (InfiniteRecursion x))
-  let pattern_matching_failed e pats = raise (E (PatternMatchingFailed (e, pats)))
-  let infinite_let_rec x = raise (E (InfiniteLetRec x))
+  let unbound_variable loc env index = raise (E (loc, UnboundVariable (env, index)))
+  let apply_non_clo loc e = raise (E (loc, ApplyNonClo (e)))
+  let infinite_recursion loc x = raise (E (loc, InfiniteRecursion x))
+  let pattern_matching_failed loc e pats = raise (E (loc, PatternMatchingFailed (e, pats)))
+  let infinite_let_rec loc x = raise (E (loc, InfiniteLetRec x))
 end
 
 let debug_print (s : State.t) = Format.fprintf s.debug_ppf
@@ -87,17 +82,17 @@ let rec match_pattern (env : Env.t) : Value.t * pattern -> Env.t option = functi
   | _ -> None
 
 let eval_head (s : State.t) (env : Env.t) : Term.head -> Value.t = function
-  | Var (_, i) -> begin match Env.lookup env i with
-      | None -> RuntimeError.unbound_variable env i
+  | Var (loc, i) -> begin match Env.lookup env i with
+      | None -> RuntimeError.unbound_variable loc env i
       | Some (x, r) -> match !r with
-        | None -> RuntimeError.infinite_let_rec x
+        | None -> RuntimeError.infinite_let_rec loc x
         | Some e -> e
     end
-  | Ref (_, f) -> begin match Signature.lookup_tm' f s.sg with
+  | Ref (loc, f) -> begin match Signature.lookup_tm' f s.sg with
       | { body = Some body; _ } -> body
-      | _ -> RuntimeError.infinite_recursion f
+      | _ -> RuntimeError.infinite_recursion loc f
     end
-  | Const (_, c) -> Util.not_implemented () (* TODO evaluate constructors into closures after adding n-ary closures *)
+  | Const (_, c) -> Value.Const (c, [])
   | Prim (_, prim) -> Value.Prim prim
 
 let rec eval (s : State.t) (env : Env.t) : Term.t -> Value.t = function
@@ -115,7 +110,7 @@ let rec eval (s : State.t) (env : Env.t) : Term.t -> Value.t = function
     let env' = Env.extend env entry in
     Env.update_entry entry @@ eval s env' e1;
     eval s env' e2
-  | Match (_, e, cases) -> eval_match s env (eval s env e) cases
+  | Match (loc, e, cases) -> eval_match loc s env (eval s env e) cases
 
 and eval_clo_app s env : var_name list * Term.t * Value.t list -> Value.t = function
   | (x :: xS, t, v :: vS) ->
@@ -127,17 +122,18 @@ and eval_clo_app s env : var_name list * Term.t * Value.t list -> Value.t = func
 
 and eval_val_app s env : Value.t * Value.t list -> Value.t = function
   | Value.Clo (env', xS, t), vS -> eval_clo_app s env' (xS, t, vS)
+  | Value.Const (c, vS1), vS2 -> Value.Const (c, vS1 @ vS2)
   | Value.Prim prim, vS -> eval_prim s env (prim, vS)
-  | vH, _ -> RuntimeError.apply_non_clo (vH)
+  | vH, _ -> RuntimeError.apply_non_clo Loc.Span.fake vH
 
 and eval_prim s env (prim, vS) = Util.not_implemented () (* TODO add evaluation of primitives *)
 
 and eval_app (s : State.t) (env : Env.t) : Term.head * Term.spine -> Value.t = function
   | (tH, tS) -> eval_val_app s env (eval_head s env tH, List.map (eval s env) tS)
 
-and eval_match (s : State.t) (env : Env.t) (scrutinee : Value.t) (cases : case list) : Value.t =
+and eval_match loc (s : State.t) (env : Env.t) (scrutinee : Value.t) (cases : case list) : Value.t =
   let rec go = function
-    | [] -> RuntimeError.pattern_matching_failed scrutinee (List.map case_pattern cases)
+    | [] -> RuntimeError.pattern_matching_failed loc scrutinee (List.map case_pattern cases)
     | Case (_, pattern, body) :: cases -> match match_pattern env (scrutinee, pattern) with
       | Some env' ->
         debug_print s "@[<v 2>@[<hv 2>matched case for pattern@ %a@]@,@[<hv 2>new env is@ %a@]@,@[<hv 2>to evaluate body@ %a@]@]@,"
@@ -163,7 +159,7 @@ let eval_decl (s : State.t) (d : Term.t Decl.t) : State.t = let open Decl in mat
     let v = eval s Env.empty body in
     s |> State.modify_signature (Signature.extend_tms name { d with body = Some v })
 
-let program initial_state program : (RuntimeError.t, State.t) Result.t =
+let program initial_state program : (RuntimeError.t Loc.Span.d, State.t) Result.t =
   let open RuntimeError in
   debug_print initial_state "@[<v>";
   let result = try Result.ok (List.fold_left eval_decl initial_state program) with

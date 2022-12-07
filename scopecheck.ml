@@ -112,6 +112,23 @@ and check_pattern_spine lookup_ctor scope = function
     Result.bind (check_pattern_spine lookup_ctor scope ps) @@ fun (scope, ps) ->
     Result.ok (scope, p :: ps)
 
+let check_head
+    (lookup_ctor : ctor_name -> int option)
+    (lookup_tm : tm_name -> bool)
+    (scope : Scope.t) : E.Term.head -> I.Term.head result =
+  function
+  | E.Term.Var (loc, x) -> begin match Scope.index_of x scope with
+      | Some i -> Result.ok @@ I.Term.Var (loc, i)
+      | None when lookup_tm x -> Result.ok @@ I.Term.Ref (loc, x)
+      | _ -> Result.error Error.(make loc @@ UnboundVariable x)
+    end
+  | E.Term.Const (loc, c) -> begin match lookup_ctor c with
+      | Some _ -> Result.ok @@ I.Term.Const (loc, c)
+      | None ->
+        Result.error Error.(make loc @@ UnboundConstructor c)
+    end
+  | E.Term.Prim (loc, prim) -> Result.ok @@ I.Term.Prim (loc, prim)
+
 let rec check_tm
     (lookup_ctor : ctor_name -> int option)
     (lookup_tm : tm_name -> bool)
@@ -119,18 +136,13 @@ let rec check_tm
   function
   | E.Term.Lit (loc, lit) ->
     Result.ok @@ I.Term.Lit (loc, lit)
-  | E.Term.Var (loc, x) -> begin match Scope.index_of x scope with
-    | Some i -> Result.ok @@ I.Term.Var (loc, i)
-    | None when lookup_tm x -> Result.ok @@ I.Term.Ref (loc, x)
-    | _ -> Result.error Error.(make loc @@ UnboundVariable x)
-  end
   | E.Term.Fun (loc, (loc_x, x), e) ->
     Result.bind (check_tm lookup_ctor lookup_tm (Scope.extend scope x) e) @@ fun e ->
     Result.ok @@ I.Term.Fun (loc, (loc_x, x), e)
-  | E.Term.App (loc, e1, e2) ->
-    Result.bind (check_tm lookup_ctor lookup_tm scope e1) @@ fun e1 ->
-    Result.bind (check_tm lookup_ctor lookup_tm scope e2) @@ fun e2 ->
-    Result.ok @@ I.Term.App (loc, e1, e2)
+  | E.Term.App (loc, tH, tS) ->
+    Result.bind (check_head lookup_ctor lookup_tm scope tH) @@ fun tH ->
+    Result.bind (check_spine lookup_ctor lookup_tm scope tS) @@ fun tS ->
+    Result.ok @@ I.Term.App (loc, tH, tS)
   | E.Term.Let (loc, rec_flag, (loc_x, x), e1, e2) ->
     let scope1 = match rec_flag with
       | NonRec -> scope
@@ -139,15 +151,13 @@ let rec check_tm
     Result.bind (check_tm lookup_ctor lookup_tm scope1 e1) @@ fun e1 ->
     Result.bind (check_tm lookup_ctor lookup_tm (Scope.extend scope x) e2) @@ fun e2 ->
     Result.ok @@ I.Term.Let (loc, rec_flag, (loc_x, x), e1, e2)
-  | E.Term.Const (loc, ctor_name, _) when None = lookup_ctor ctor_name ->
-    Result.error Error.(make loc @@ UnboundConstructor ctor_name)
-  | E.Term.Const (loc, ctor_name, es) ->
-    Result.(bind @@ traverse (check_tm lookup_ctor lookup_tm scope) es) @@ fun es ->
-    Result.ok @@ I.Term.Const (loc, ctor_name, es)
   | E.Term.Match (loc, e, cases) ->
     Result.bind (check_tm lookup_ctor lookup_tm scope e) @@ fun e ->
     Result.(bind @@ traverse (check_case lookup_ctor lookup_tm scope) cases) @@ fun cases ->
     Result.ok @@ I.Term.Match (loc, e, cases)
+
+and check_spine lookup_ctor lookup_tm scope =
+  Result.traverse (check_tm lookup_ctor lookup_tm scope)
 
 and check_case lookup_ctor lookup_tm scope = function
   | Case (loc, pat, body) ->

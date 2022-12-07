@@ -37,6 +37,10 @@ module Scope = struct
     go 0
 end
 
+module Prim = struct
+  type t = Eq | Lt | Not | And | Or | CharAt | SubString
+end
+
 (** Built-in types. *)
 type builtin_tp = Int | Char | String | Bool
 
@@ -77,30 +81,36 @@ module External = struct
       | VariablePattern (loc, _) -> loc
       | WildcardPattern loc -> loc
 
+    type head =
+      | Var of loc * var_name
+      | Const of loc * ctor_name
+      | Prim of loc * Prim.t
+
+    let loc_of_head = function
+      | Var (loc, _) -> loc
+      | Const (loc, _) -> loc
+      | Prim (loc, _) -> loc
+
     type t =
       | Lit of loc * literal
-      | Var of loc * var_name
       (* in external syntax, we can't tell apart a local var ref from a ref to
       another definition, so there is no case for "ref" *)
       | Fun of loc * (loc * var_name) * t
-      | App of loc * t * t
+      | App of loc * head * spine
       | Let of loc * rec_flag * (loc * var_name) * t * t
       | Match of loc * t * case list
       (* we distinguish function applications from constructor applications since constructors
       use uppercase names. *)
-      | Const of loc * ctor_name * spine
 
      and spine = t list
      and case = Case of Loc.span * pattern * t
 
      let loc_of_tm = function
        | Lit (loc, _) -> loc
-       | Var (loc, _) -> loc
-       | Fun (loc, _, _) -> loc
        | App (loc, _, _) -> loc
+       | Fun (loc, _, _) -> loc
        | Let (loc, _, _, _, _) -> loc
        | Match (loc, _, _) -> loc
-       | Const (loc, _, _) -> loc
 
      let case_body (Case (_, _, body)) = body
   end
@@ -220,15 +230,24 @@ module Internal = struct
       | VariablePattern of Loc.span * var_name
       | WildcardPattern of Loc.span
 
+    type head =
+      | Var of loc * index
+      | Const of loc * ctor_name
+      | Prim of loc * Prim.t
+      | Ref of loc * tm_name
+
+    let loc_of_head = function
+      | Var (loc, _) -> loc
+      | Const (loc, _) -> loc
+      | Prim (loc, _) -> loc
+      | Ref (loc, _) -> loc
+
     type t
       = Lit of loc * literal
-      | Var of loc * index (* The span refers to the span of the original named variable *)
-      | Ref of loc * tm_name
       | Fun of loc * (loc * var_name) * t
-      | App of loc * t * t
+      | App of loc * head * spine
       | Let of loc * rec_flag * (loc * var_name) * t * t
       | Match of loc * t * case list
-      | Const of loc * ctor_name * spine
 
     and spine = t list
 
@@ -250,15 +269,15 @@ module Internal = struct
       in
       go
 
+    (* Expands a sequence of variable names into functions around a given body. *)
+    let expand_funs xS e = List.fold_right (fun x e -> Fun (Loc.Span.fake, (Loc.Span.fake, x), e)) xS e
+
     let loc_of_tm = function
       | Lit (loc, _) -> loc
-      | Var (loc, _) -> loc
-      | Ref (loc, _) -> loc
       | Fun (loc, _, _) -> loc
       | App (loc, _, _) -> loc
       | Let (loc, _, _, _, _) -> loc
       | Match (loc, _, _) -> loc
-      | Const (loc, _, _) -> loc
 
     let loc_of_pattern = function
       | ConstPattern (loc, _, _) -> loc
@@ -272,7 +291,8 @@ module Internal = struct
     type t =
       | Lit of literal
       | Const of ctor_name * spine
-      | Clo of env * var_name * Term.t
+      | Prim of Prim.t
+      | Clo of env * var_name list * Term.t
 
     and spine = t list
 
@@ -288,7 +308,7 @@ module Internal = struct
       We also store the name of the variable and whether the variable is
       recursively defined.
     *)
-    and env_entry = var_name * rec_flag * t option ref
+    and env_entry = var_name * t option ref
     and env = env_entry list
 
     type value = t
@@ -304,17 +324,17 @@ module Internal = struct
     let concat env1 env2 = env1 @ env2
     let concats l = List.fold_right concat l []
 
-    let alloc_entry ?(rec_flag = NonRec) ?(contents = None) name : entry =
-      (name, NonRec, ref contents)
+    let alloc_entry ?(contents = None) name : entry =
+      (name, ref contents)
 
-    let update_entry (_, _, r) t = match !r with
+    let update_entry (_, r) t = match !r with
       | None -> r := (Some t)
       | Some _ -> raise (Util.Invariant "clo ref must be empty when updated")
 
     let lookup : t -> index -> entry option = lookup_var
 
     (* Forgets the values associated to the variables, keeping only their names *)
-    let to_scope : t -> Scope.t = List.map (fun (x, _, _) -> x)
+    let to_scope : t -> Scope.t = List.map (fun (x, _) -> x)
   end
 
   (* Top-level declarations. *)
@@ -455,11 +475,10 @@ module Internal = struct
     let def x e1 e2 = Let (Loc.Span.fake, NonRec, (Loc.Span.fake, x), e1, e2)
     let recdef x e1 e2 = Let (Loc.Span.fake, Rec, (Loc.Span.fake, x), e1, e2)
     (* let fix f = Rec f *)
-    let const name spine = Const (Loc.Span.fake, name, spine)
-    let (@@@) e1 e2 = App (Loc.Span.fake, e1, e2)
+    let const name spine = App (Loc.Span.fake, Const (Loc.Span.fake, name), spine)
     let (-->) pat e = (pat, e)
     (* Constructs an application of a function of multiple arguments *)
-    let apps head spine = List.fold_left (fun head arg -> head @@@ arg) head spine
+    let apps head spine = App (Loc.Span.fake, head, spine)
 
     (* Type variable *)
     let tv x = TVar (`fake, x)

@@ -485,29 +485,26 @@ let rec last (l : 'a list) (return : 'a -> 'r) (fail : unit -> 'r) : 'r = match 
   | [x] -> return x
   | _ :: xs -> last xs return fail
 
+let head () : Term.head t =
+  let variable () =
+    label "variable" @@
+    lident |> map (fun (loc, x) -> Term.Var (loc, x))
+  in
+  let ctor () =
+    bind uident @@ fun (loc_const, ctor_name) ->
+    pure @@ Term.Const (loc_const, ctor_name)
+  in
+  choice [variable; ctor]
+
 let rec term () : Term.t t =
+  let head0 () : Term.t t =
+    bind (force head) @@ fun tH -> pure @@ Term.App (Term.loc_of_head tH, tH, [])
+  in
   let lit () : Term.t t =
     label "integer literal" @@
     literal |> map (fun (loc, lit) -> Term.Lit (loc, lit))
   in
-  let variable () : Term.t t =
-    label "variable" @@
-    lident |> map (fun (loc, x) -> Term.Var (loc, x))
-  in
-  let const0 () =
-    bind uident @@ fun (loc_const, ctor_name) ->
-    pure @@ Term.Const (loc_const, ctor_name, [])
-  in
-  let atomic () = choice [lit; variable; const0; fun _ -> parenthesized @@ force term] in
-  let const () : Term.t t =
-    bind uident @@ fun (loc_const, ctor_name) ->
-    bind (many @@ force atomic) @@ fun spine ->
-    pure @@ Term.Const (
-      Loc.Span.join loc_const @@ last spine Term.loc_of_tm (fun () -> loc_const),
-      ctor_name,
-      spine
-    )
-  in
+  let atomic () = choice [head0; lit; fun _ -> parenthesized @@ force term] in
   let lam () : Term.t t =
     label "function literal" @@
     bind kw_fun @@ fun (loc_fun, _) ->
@@ -554,9 +551,12 @@ let rec term () : Term.t t =
       cases
     )
   in
-  let term1 = choice [let_; match_; lam; atomic; const] in
-  bind (some term1) @@ fun (e :: es) ->
-  pure @@ List.fold_left Term.(fun a e -> App (Loc.Span.join (loc_of_tm a) (loc_of_tm e), a, e)) e es
+  let app () =
+    bind (force head) @@ fun tH ->
+    bind (some (force atomic)) @@ fun tS ->
+    pure @@ Term.App (Loc.Span.join (Term.loc_of_head tH) (Term.loc_of_tm @@ List.hd tS), tH, tS)
+  in
+  choice [let_; match_; lam; app]
 
 let tm_decl : Decl.tm t =
   bind kw_def @@ fun (loc_def, _) ->

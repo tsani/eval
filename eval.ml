@@ -23,35 +23,45 @@ end
 module RuntimeError = struct
   type t =
     | UnboundVariable of Env.t * index
-    | ApplyNonClo of Value.t * (Scope.t * Term.t)
+    | ApplyNonClo of Value.t
     | InfiniteRecursion of tm_name
-    | InfiniteLetRec
+    | InfiniteLetRec of var_name
     | PatternMatchingFailed of Value.t * Term.pattern list
 
-  let print ppf : t -> unit = let open Format in function
-    | UnboundVariable (env, i) ->
-      fprintf ppf "@[<v 2>Unbound variable %d in environment@ %a@]" i P.print_env env
-    | ApplyNonClo (v, (sco, e)) ->
-      fprintf ppf "@[<v>@[<v 2>%a: Cannot apply non-closure@ %a@]@,@[<v 2>to argument@ %a@]@]"
-        Loc.print (Term.loc_of_tm e).Loc.Span.start
+  let print ppf : t Loc.Span.d -> unit = let open Format in function
+    | loc, UnboundVariable (env, i) ->
+      fprintf ppf "@[<v 2>%a: Unbound variable %d in environment@ %a@]"
+        Loc.print loc.Loc.Span.start
+        i
+        P.print_env env
+    | loc, ApplyNonClo (v) ->
+      fprintf ppf "@[<v>%a: Cannot apply non-closure@ %a@]"
+        Loc.print loc.Loc.Span.start
         (P.print_value 0) v
-        (P.print_tm 0 sco) e
-    | InfiniteRecursion x ->
-      fprintf ppf "Infinite recursion detected in definition for %s" x
-    | InfiniteLetRec ->
-      fprintf ppf "Infinite recursion detected in local definition"
-    | PatternMatchingFailed (v, pats) ->
-      fprintf ppf "@[<hv>@[<hv 2>Failed to match term@ %a]@ @[<v 2>against any of the patterns:@ %a@]@]"
+
+    | loc, InfiniteRecursion x ->
+      fprintf ppf "%a: infinite recursion detected in top-level definition for %s"
+        Loc.print loc.Loc.Span.start
+        x
+
+    | loc, InfiniteLetRec x ->
+      fprintf ppf "%a: infinite recursion detected in local definition, for %s"
+        Loc.print loc.Loc.Span.start
+        x
+
+    | loc, PatternMatchingFailed (v, pats) ->
+      fprintf ppf "@[<hv>@[<hv 2>%a: Failed to match term@ %a]@ @[<v 2>against any of the patterns:@ %a@]@]"
+        Loc.print loc.Loc.Span.start
         (P.print_value 0) v
         (pp_print_list ~pp_sep: pp_print_cut (fun ppf -> fprintf ppf "- @[%a@]" (P.print_pattern 0))) pats
 
   exception E of t
 
   let unbound_variable env index = raise (E (UnboundVariable (env, index)))
-  let apply_non_clo e e' = raise (E (ApplyNonClo (e, e')))
+  let apply_non_clo e = raise (E (ApplyNonClo (e)))
   let infinite_recursion x = raise (E (InfiniteRecursion x))
   let pattern_matching_failed e pats = raise (E (PatternMatchingFailed (e, pats)))
-  let infinite_let_rec () = raise (E (InfiniteLetRec))
+  let infinite_let_rec x = raise (E (InfiniteLetRec x))
 end
 
 let debug_print (s : State.t) = Format.fprintf s.debug_ppf
@@ -76,57 +86,54 @@ let rec match_pattern (env : Env.t) : Value.t * pattern -> Env.t option = functi
     end
   | _ -> None
 
+let eval_head (s : State.t) (env : Env.t) : Term.head -> Value.t = function
+  | Var (_, i) -> begin match Env.lookup env i with
+      | None -> RuntimeError.unbound_variable env i
+      | Some (x, r) -> match !r with
+        | None -> RuntimeError.infinite_let_rec x
+        | Some e -> e
+    end
+  | Ref (_, f) -> begin match Signature.lookup_tm' f s.sg with
+      | { body = Some body; _ } -> body
+      | _ -> RuntimeError.infinite_recursion f
+    end
+  | Const (_, c) -> Util.not_implemented () (* TODO evaluate constructors into closures after adding n-ary closures *)
+  | Prim (_, prim) -> Value.Prim prim
+
 let rec eval (s : State.t) (env : Env.t) : Term.t -> Value.t = function
   | Lit (_, lit) -> Value.Lit lit
-  | Var (_, i) -> begin match Env.lookup env i with
-    | None -> RuntimeError.unbound_variable env i
-    | Some (_, _, r) -> match !r with
-      | None -> RuntimeError.infinite_let_rec ()
-      | Some e -> e
-  end
-  | Ref (_, v) -> begin match Signature.lookup_tm' v s.sg with
-    | { body = Some body; _ } -> body
-    | _ -> RuntimeError.infinite_recursion v
-  end
   | Fun (_, (_, x), e) ->
-    let v = Value.Clo (env, x, e) in
+    let v = Value.Clo (env, [x], e) in
     debug_print s "@[<hv 2>Construct closure@ %a@]@," (P.print_value 0) v;
     v
-  | App (_, e1, e2) as e ->
-    let sco = Env.to_scope env in
-    debug_print s "@[<hv 2>Evaluate application@ `%a'@ left side.@ "
-      (P.print_tm 0 sco) e;
-    let v1 = eval s env e1 in
-    debug_print s "@]@,";
-    begin match v1 with
-      | Clo (clo_env, x, e) ->
-        debug_print s "@[<hv 2>Evaluate application@ `%a'@ right side.@ "
-        (P.print_tm 0 sco) e2;
-        let v2 = eval s env e2 in
-        debug_print s "@]@,@[<hv>Perform application:@ %a@ to@ %a@]@,"
-        (P.print_value 0) v1
-        (P.print_value 0) v2;
-        let env' = Env.(extend clo_env @@ alloc_entry ~contents: (Some v2) x) in
-        debug_print s "@[<v 2>Enter closure with now-full env@ %a@]@,"
-          P.print_env env';
-        eval s env' e
-      | Const (c, ts) ->
-        (* In this case we simply add the term to the spine!
-           This is what enables curried constructors. (Which are allowed by the type system already.) *)
-        let v2 = eval s env e2 in
-        Const (c, ts @ [v2])
-      | e -> RuntimeError.apply_non_clo v1 (sco, e2)
-    end
+  | App (_, tH, tS) -> eval_app s env (tH, tS)
   | Let (_, NonRec, (_, x), e1, e2) ->
     let v = eval s env e1 in
     eval s Env.(extend env @@ alloc_entry ~contents: (Some v) x) e2
   | Let (_, Rec, (_, x), e1, e2) ->
-    let entry = Env.alloc_entry ~rec_flag: Rec x in
+    let entry = Env.alloc_entry x in
     let env' = Env.extend env entry in
     Env.update_entry entry @@ eval s env' e1;
     eval s env' e2
   | Match (_, e, cases) -> eval_match s env (eval s env e) cases
-  | Const (_, ctor_name, spine) -> Const (ctor_name, List.map (eval s env) spine)
+
+and eval_clo_app s env : var_name list * Term.t * Value.t list -> Value.t = function
+  | (x :: xS, t, v :: vS) ->
+    let entry = Env.alloc_entry ~contents: (Some v) x in
+    eval_clo_app s (Env.extend env entry) (xS, t, vS)
+  | ([], t, []) -> eval s env t
+  | (xS, t, []) -> Clo (env, xS, t)
+  | ([], t, vS) -> eval_val_app s env (eval s env t, vS)
+
+and eval_val_app s env : Value.t * Value.t list -> Value.t = function
+  | Value.Clo (env', xS, t), vS -> eval_clo_app s env' (xS, t, vS)
+  | Value.Prim prim, vS -> eval_prim s env (prim, vS)
+  | vH, _ -> RuntimeError.apply_non_clo (vH)
+
+and eval_prim s env (prim, vS) = Util.not_implemented () (* TODO add evaluation of primitives *)
+
+and eval_app (s : State.t) (env : Env.t) : Term.head * Term.spine -> Value.t = function
+  | (tH, tS) -> eval_val_app s env (eval_head s env tH, List.map (eval s env) tS)
 
 and eval_match (s : State.t) (env : Env.t) (scrutinee : Value.t) (cases : case list) : Value.t =
   let rec go = function

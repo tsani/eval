@@ -41,6 +41,8 @@ module Span = struct
 
   type t = span
 
+  type 'a d = t * 'a
+
   (* A fake source span consists of fake locations. *)
   let is_fake { start; stop } = start = fake || stop = fake
 

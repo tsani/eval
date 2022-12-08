@@ -27,6 +27,7 @@ module RuntimeError = struct
     | InfiniteRecursion of tm_name
     | InfiniteLetRec of var_name
     | PatternMatchingFailed of Value.t * Term.pattern list
+    | BadEq
 
   let print ppf : t -> unit = let open Format in function
     | UnboundVariable (env, i) ->
@@ -50,6 +51,9 @@ module RuntimeError = struct
         (P.print_value 0) v
         (pp_print_list ~pp_sep: pp_print_cut (fun ppf -> fprintf ppf "- @[%a@]" (P.print_pattern 0))) pats
 
+    | BadEq ->
+      fprintf ppf "equality is only decidable for literals and constructors"
+
   exception E of t Loc.Span.d
 
   let unbound_variable loc env index = raise (E (loc, UnboundVariable (env, index)))
@@ -57,9 +61,17 @@ module RuntimeError = struct
   let infinite_recursion loc x = raise (E (loc, InfiniteRecursion x))
   let pattern_matching_failed loc e pats = raise (E (loc, PatternMatchingFailed (e, pats)))
   let infinite_let_rec loc x = raise (E (loc, InfiniteLetRec x))
+  let bad_eq loc = raise (E (loc, bad_eq))
 end
 
 let debug_print (s : State.t) = Format.fprintf s.debug_ppf
+
+let rec value_eq : Value.t * Value.t -> bool =
+  let open Value in
+  function
+  | Const (c1, vS1), Const (c2, vS2) -> c1 = c2 && List.for_all value_eq (List.combine vS1 vS2)
+  | Lit l1, Lit l2 -> l1 = l2
+  | _ -> RuntimeError.bad_eq Loc.Span.fake
 
 (* Matches a term against a pattern, extending the given environment with new bindings.
  * Produces None if matching fails.
@@ -126,7 +138,13 @@ and eval_val_app s env : Value.t * Value.t list -> Value.t = function
   | Value.Prim prim, vS -> eval_prim s env (prim, vS)
   | vH, _ -> RuntimeError.apply_non_clo Loc.Span.fake vH
 
-and eval_prim s env (prim, vS) = Util.not_implemented () (* TODO add evaluation of primitives *)
+and eval_prim s env (prim, vS) : Value.t =
+  let open Prim in
+  match prim, vS with
+  | Eq, [v1; v2] -> Value.Lit (BoolLit (value_eq v1 v2))
+  | Lt, [Value.Lit (IntLit i1); Value.Lit (IntLit i2)] -> Value.Lit (BoolLit (i1 < i2))
+  | Not, [Value.Lit (BoolLit b)] -> Value.Lit (BoolLit (not b))
+                                      (* TODO implement more primitives *)
 
 and eval_app (s : State.t) (env : Env.t) : Term.head * Term.spine -> Value.t = function
   | (tH, tS) -> eval_val_app s env (eval_head s env tH, List.map (eval s env) tS)

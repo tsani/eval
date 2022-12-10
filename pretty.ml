@@ -93,12 +93,40 @@ module Internal = struct
         (print_cases scope) cases
         rparen (lvl > 0)
 
-  and print_prim lvl scope ppf = function
-    | (prim, tS) -> Util.not_implemented ()
+  and print_prim_app lvl scope ppf =
+    let bop op prec t1 t2 =
+      fprintf ppf "@[%a%a@ %s@ %a%a@]"
+        lparen (lvl > prec)
+        (print_tm prec scope) t1
+        op
+        (print_tm prec scope) t2
+        rparen (lvl > prec)
+    in
+    let uop op prec t =
+      fprintf ppf "@[%a%s%a%a@]"
+        lparen (lvl > prec)
+        op
+        (print_tm prec scope) t
+        rparen (lvl > prec)
+    in
+    let open Prim in
+    function
+    | Or, [t1; t2] -> bop "||" 2 t1 t2
+    | And, [t1; t2] -> bop "&&" 3 t1 t2
+    | Eq, [t1; t2] -> bop "==" 4 t1 t2
+    | Lt, [t1; t2] -> bop "<" 4 t1 t2
+    | Div, [t1; t2] -> bop "/" 5 t1 t2
+    | Plus, [t1; t2] -> bop "+" 6 t1 t2
+    | Times, [t1; t2] -> bop "*" 7 t1 t2
+    | CharAt, [t1; t2] -> bop "@" 8 t1 t2
+    | Not, [t] -> uop "!" 9 t
+    | Neg, [t] -> uop "-" 9 t
+    | SubString, ts ->
+      print_simple_app lvl scope ppf ((fun ppf _ -> fprintf ppf "substring"), ts)
 
   and print_app lvl scope ppf : Term.head * Term.spine -> unit = function
     (* since Prims are usually operators, we handle printing them specially *)
-    | (Prim (_, prim), tS) -> print_prim lvl scope ppf (prim, tS)
+    | (Prim (_, prim), tS) -> print_prim_app lvl scope ppf (prim, tS)
     (* Variables and constructors work the same way. *)
     | (Var (_, i), tS) ->
       print_simple_app lvl scope ppf ((fun ppf () -> print_var scope ppf i), tS)
@@ -109,10 +137,10 @@ module Internal = struct
     | print_head, [] -> print_head ppf ()
     | print_head, tS ->
       fprintf ppf "%a@[<hv 2>%a@ %a@]%a"
-        lparen (lvl > 8)
+        lparen (lvl > 10)
         print_head ()
         (print_spine 10 scope) tS
-        rparen (lvl > 8)
+        rparen (lvl > 10)
 
 
   and print_spine ?(sep = pp_print_space) lvl scope ppf : Term.t list -> unit =

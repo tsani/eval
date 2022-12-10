@@ -191,6 +191,8 @@ let alt (p1 : 'a t susp) (p2 : 'a t susp) : 'a t =
   | Result.Error (_, `non_fatal, _) -> p2 ()
   | Result.Error (l, fatality, e) -> fail_at l e
 
+let alt' p1 p2 = alt (fun _ -> p1) (fun _ -> p2)
+
 (** Slightly specialized form of {!handle}.
     The failure must be non-fatal. Any failure can be made non-fatal with
     {!trying} *)
@@ -229,6 +231,8 @@ let sep_by0 sep p =
 let choice (ps : 'a t susp list) : 'a t =
   force @@ List.fold_right (fun p acc -> delay @@ alt p acc) ps
     (fun () -> fail @@ ParseError.NoMoreChoices (OneOf (List.map (fun p -> (force p).label) ps)))
+
+let choice' ps = choice (List.map (fun p -> fun _ -> p) ps)
 
 (** Look at the character at the parser's current position. *)
 let peek : char t = {
@@ -346,8 +350,12 @@ let operator s = lexeme (span @@ exact s |> not_followed_by symbol)
 let op_arrow = operator "->"
 let op_pipe = operator "|"
 let op_eq = operator "="
+let op_eql = operator "=="
+let op_at = operator "@"
+let op_minus = operator "-"
 let op_plus = operator "+"
 let op_star = operator "*"
+let op_langle = operator "<"
 let op_slash = operator "/"
 let op_bang = operator "!"
 let op_ampersand2 = operator "&&"
@@ -408,6 +416,7 @@ let prim_of_op = function
   | "*" -> Prim.Times
   | "-" -> Prim.Neg
   | "/" -> Prim.Div
+  | "substring" -> Prim.SubString
   | _ -> Util.invariant "prim_of_op interprets known operators"
 
 let builtin_tp : builtin_tp t =
@@ -491,7 +500,7 @@ let rec pattern () : Term.pattern t =
     bind uident @@ fun (loc, ctor_name) ->
     pure Term.(ConstPattern (loc, ctor_name, []))
   in
-  let atomic () = choice [wildcard; variable; lit; const0; fun _ -> parenthesized @@ force pattern] in
+  let atomic () = choice [wildcard; lit; variable; const0; fun _ -> parenthesized @@ force pattern] in
   let const () =
     label "constructor pattern" @@
     bind uident @@ fun (loc, ctor_name) ->
@@ -519,7 +528,11 @@ let head () : Term.head t =
     bind uident @@ fun (loc_const, ctor_name) ->
     pure @@ Term.Const (loc_const, ctor_name)
   in
-  choice [variable; ctor]
+  let prim () =
+    bind (choice' [op_bang; op_minus; keyword "substring"]) @@ fun (loc, _) ->
+    pure @@ Term.Prim (loc, Prim.Not)
+  in
+  choice [prim; variable; ctor]
 
 let rec term () : Term.t t =
   let head0 () : Term.t t =
@@ -583,13 +596,24 @@ let rec term () : Term.t t =
     let l = Term.loc_of_head tH in
     pure @@ Term.App (Loc.Span.join (Term.loc_of_head tH) (first tS Term.loc_of_tm (fun _ -> l)), tH, tS)
   in
-  let term2 () = app () in
-  let rec term1 () =
-    bind (force term2) @@ fun t ->
-    bind (many (seq2 op_plus @@ force term1)) @@ fun ts ->
-    let loc t1 t2 = Loc.Span.join (Term.loc_of_tm t1) (Term.loc_of_tm t2) in
-    pure @@ List.fold_left (fun acc ((l, op), t) -> Term.App (loc acc t, Term.Prim (l, prim_of_op op), [acc; t])) t ts
+  let join_tm_loc t1 t2 = Loc.Span.join (Term.loc_of_tm t1) (Term.loc_of_tm t2) in
+  let fold_ops =
+    List.fold_left (fun acc ((l, op), t) -> Term.App (join_tm_loc acc t, Term.Prim (l, prim_of_op op), [acc; t]))
   in
+  let parse_op op next self =
+    bind (force next) @@ fun t ->
+    bind (many (seq2 op @@ force self)) @@ fun ts ->
+    pure @@ fold_ops t ts
+  in
+  let literal_term () = map (fun (loc, lit) -> Term.Lit (loc, lit)) literal in
+  let rec term8 () = choice [literal_term; app] in
+  let rec term7 () = parse_op op_at term8 term7 in
+  let rec term6 () = parse_op op_star term7 term6 in
+  let rec term5 () = parse_op op_plus term6 term5 in
+  let rec term4 () = parse_op op_slash term5 term4 in
+  let rec term3 () = parse_op (alt' op_langle op_eql) term4 term3 in
+  let rec term2 () = parse_op op_ampersand2 term3 term2 in
+  let rec term1 () = parse_op op_pipe2 term2 term1 in
   choice [let_; match_; lam; term1; fun _ -> parenthesized @@ force term]
 
 let tm_decl : Decl.tm t =

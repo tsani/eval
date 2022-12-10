@@ -80,7 +80,21 @@ let rec check_tp
   | E.Type.TVar (loc, a) -> Result.error @@ Error.(make loc @@ UnboundTypeVariable a)
 
   | E.Type.Named (loc, a, ts) -> match lookup_tp a with
-    | None -> Result.error @@ Error.(make loc @@ UnknownNamedType a)
+    | None ->
+      let not_nullary () =
+        Result.error @@ Error.(make loc @@ BadArity { expected = 0; actual = List.length ts; tp_name = a })
+      in
+      begin match a, ts with
+        | "Int", [] -> Result.ok @@ I.Type.Builtin (`literal loc, Int)
+        | "Int", _ -> not_nullary ()
+        | "Char", [] -> Result.ok @@ I.Type.Builtin (`literal loc, Char)
+        | "Char", _ -> not_nullary ()
+        | "String", [] -> Result.ok @@ I.Type.Builtin (`literal loc, String)
+        | "String", _ -> not_nullary ()
+        | "Bool", [] -> Result.ok @@ I.Type.Builtin (`literal loc, Bool)
+        | "Bool", _ -> not_nullary ()
+        | _ -> Result.error @@ Error.(make loc @@ UnknownNamedType a)
+      end
     | Some n ->
       let k = List.length ts in
       if k <> n then

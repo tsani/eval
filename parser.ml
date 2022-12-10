@@ -14,7 +14,7 @@ let is_digit c =
   Char.code '0' <= i && i <= Char.code '9'
 
 let is_symbol c =
-  List.mem c ['!'; '@'; '#'; '$'; '%'; '^'; '&'; '*'; '<'; '>'; '|'; '/'; '\\'; '?'; '-'; ':']
+  List.mem c ['/'; '*'; '+'; '!'; '@'; '#'; '$'; '%'; '^'; '&'; '*'; '<'; '>'; '|'; '/'; '\\'; '?'; '-'; ':']
 
 type 'a susp = unit -> 'a
 let delay x = fun () -> x
@@ -150,6 +150,8 @@ let bind (p : 'a t) (k : 'a -> 'b t) : 'b t = {
   label = Anon;
   run = fun r s fail return -> p.run r s fail @@ fun s x -> (k x).run r s fail return
 }
+
+let seq2 p1 p2 = bind p1 @@ fun x1 -> bind p2 @@ fun x2 -> pure (x1, x2)
 
 let fail_raw (e : ParseError.t) : 'a t = {
   label = Anon;
@@ -340,11 +342,17 @@ let lexeme (p : 'a t) =
   label' p.label (p <& many whitespace)
 
 (** Parses an exact string ensuring that it isn't isn't a prefix of a bigger symbol. *)
-let symbol s = lexeme (span @@ exact s |> not_followed_by symbol)
-let sym_arrow = symbol "->"
-let sym_pipe = symbol "|"
-let sym_eq = symbol "="
-let sym_colon = symbol ":"
+let operator s = lexeme (span @@ exact s |> not_followed_by symbol)
+let op_arrow = operator "->"
+let op_pipe = operator "|"
+let op_eq = operator "="
+let op_plus = operator "+"
+let op_star = operator "*"
+let op_slash = operator "/"
+let op_bang = operator "!"
+let op_ampersand2 = operator "&&"
+let op_pipe2 = operator "||"
+let op_colon = operator ":"
 
 let lparen = lexeme (char '(')
 let rparen = lexeme (char ')')
@@ -388,6 +396,19 @@ let lident =
 
 open Syntax
 open Syntax.External
+
+let prim_of_op = function
+  | "!" -> Prim.Not
+  | "+" -> Prim.Plus
+  | "&&" -> Prim.And
+  | "||" -> Prim.Or
+  | "==" -> Prim.Eq
+  | "<" -> Prim.Lt
+  | "@" -> Prim.CharAt
+  | "*" -> Prim.Times
+  | "-" -> Prim.Neg
+  | "/" -> Prim.Div
+  | _ -> Util.invariant "prim_of_op interprets known operators"
 
 let builtin_tp : builtin_tp t =
   choice [
@@ -434,7 +455,7 @@ let rec typ () : Type.t t =
     pure @@ Type.Named (loc, a, ts)
   in
   bind (alt named atomic_typ) @@ fun t ->
-  bind (optional sym_arrow) @@ function
+  bind (optional op_arrow) @@ function
   | None -> pure t
   | Some _ ->
     bind (force typ) @@ fun t' ->
@@ -513,7 +534,7 @@ let rec term () : Term.t t =
     label "function literal" @@
     bind kw_fun @@ fun (loc_fun, _) ->
     bind lident @@ fun (loc_x, x) ->
-    bind sym_arrow @@ fun _ ->
+    bind op_arrow @@ fun _ ->
     bind (force term) @@ fun body ->
     let loc = Loc.Span.(join loc_fun @@ Term.loc_of_tm body) in
     pure @@ Term.Fun (loc, (loc_x, x), body)
@@ -523,7 +544,7 @@ let rec term () : Term.t t =
     bind kw_let @@ fun (loc_let, _) ->
     bind (optional kw_rec) @@ fun rec_opt ->
     bind lident @@ fun (loc_x, x) ->
-    bind sym_eq @@ fun _ ->
+    bind op_eq @@ fun _ ->
     bind (force term) @@ fun e1 ->
     bind kw_in @@ fun _ ->
     bind (force term) @@ fun e2 ->
@@ -538,9 +559,9 @@ let rec term () : Term.t t =
   let match_ () : Term.t t =
     let case =
       label "match case" @@
-      bind sym_pipe @@ fun (loc_pipe, _) ->
+      bind op_pipe @@ fun (loc_pipe, _) ->
       bind (force pattern) @@ fun pat ->
-      bind sym_arrow @@ fun _ ->
+      bind op_arrow @@ fun _ ->
       bind (force term) @@ fun e ->
       pure @@ Term.Case (Loc.Span.join loc_pipe @@ Term.loc_of_tm e, pat, e)
     in
@@ -562,14 +583,21 @@ let rec term () : Term.t t =
     let l = Term.loc_of_head tH in
     pure @@ Term.App (Loc.Span.join (Term.loc_of_head tH) (first tS Term.loc_of_tm (fun _ -> l)), tH, tS)
   in
-  choice [let_; match_; lam; app; fun _ -> parenthesized @@ force term]
+  let term2 () = app () in
+  let rec term1 () =
+    bind (force term2) @@ fun t ->
+    bind (many (seq2 op_plus @@ force term1)) @@ fun ts ->
+    let loc t1 t2 = Loc.Span.join (Term.loc_of_tm t1) (Term.loc_of_tm t2) in
+    pure @@ List.fold_left (fun acc ((l, op), t) -> Term.App (loc acc t, Term.Prim (l, prim_of_op op), [acc; t])) t ts
+  in
+  choice [let_; match_; lam; term1; fun _ -> parenthesized @@ force term]
 
 let tm_decl : Decl.tm t =
   bind kw_def @@ fun (loc_def, _) ->
   bind (optional kw_rec) @@ fun rec_flag ->
   bind lident @@ fun (loc_name, name) ->
-  bind (optional (sym_colon &> force typ)) @@ fun typ ->
-  bind sym_eq @@ fun _ ->
+  bind (optional (op_colon &> force typ)) @@ fun typ ->
+  bind op_eq @@ fun _ ->
   bind (force term) @@ fun body ->
   pure @@ Decl.({
       name;
@@ -580,7 +608,7 @@ let tm_decl : Decl.tm t =
     })
 
 let ctor_decl : Decl.ctor t =
-  bind sym_pipe @@ fun (loc_pipe, _) ->
+  bind op_pipe @@ fun (loc_pipe, _) ->
   bind uident @@ fun (loc_name, name) ->
   bind (force atomic_typ |> many) @@ fun fields ->
   pure Decl.({
@@ -593,7 +621,7 @@ let tp_decl : Decl.tp t =
   bind kw_type @@ fun (loc_type, _) ->
   bind uident @@ fun (_, name) ->
   bind (many lident) @@ fun xs ->
-  bind sym_eq @@ fun (loc_eq, _) ->
+  bind op_eq @@ fun (loc_eq, _) ->
   bind (many ctor_decl) @@ fun constructors ->
   pure Decl.({
       name;

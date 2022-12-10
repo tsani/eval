@@ -61,7 +61,7 @@ module RuntimeError = struct
   let infinite_recursion loc x = raise (E (loc, InfiniteRecursion x))
   let pattern_matching_failed loc e pats = raise (E (loc, PatternMatchingFailed (e, pats)))
   let infinite_let_rec loc x = raise (E (loc, InfiniteLetRec x))
-  let bad_eq loc = raise (E (loc, bad_eq))
+  let bad_eq loc = raise (E (loc, BadEq))
 end
 
 let debug_print (s : State.t) = Format.fprintf s.debug_ppf
@@ -140,11 +140,19 @@ and eval_val_app s env : Value.t * Value.t list -> Value.t = function
 
 and eval_prim s env (prim, vS) : Value.t =
   let open Prim in
+  let open Value in
   match prim, vS with
-  | Eq, [v1; v2] -> Value.Lit (BoolLit (value_eq v1 v2))
-  | Lt, [Value.Lit (IntLit i1); Value.Lit (IntLit i2)] -> Value.Lit (BoolLit (i1 < i2))
-  | Not, [Value.Lit (BoolLit b)] -> Value.Lit (BoolLit (not b))
-                                      (* TODO implement more primitives *)
+  | Eq, [v1; v2] -> Lit (BoolLit (value_eq (v1, v2)))
+  | Lt, [Lit (IntLit i1); Lit (IntLit i2)] -> Lit (BoolLit (i1 < i2))
+  | Not, [Lit (BoolLit b)] -> Lit (BoolLit (not b))
+  | And, [Lit (BoolLit b1); Lit (BoolLit b2)] -> Lit (BoolLit (b1 && b2))
+  | Or, [Lit (BoolLit b1); Lit (BoolLit b2)] -> Lit (BoolLit (b1 || b2))
+  | CharAt, [Lit (StringLit s); Lit (IntLit i)] -> Lit (CharLit (String.get s i))
+  | SubString, [Lit (StringLit s); Lit (IntLit i); Lit (IntLit n)] -> Lit (StringLit (String.sub s i n))
+  | Plus, [Lit (IntLit n1); Lit (IntLit n2)] -> Lit (IntLit (n1 + n2))
+  | Times, [Lit (IntLit n1); Lit (IntLit n2)] -> Lit (IntLit (n1 * n2))
+  | Neg, [Lit (IntLit n)] -> Lit (IntLit (-n))
+  | Div, [Lit (IntLit n1); Lit (IntLit (n2))] -> Lit (IntLit (n1 / n2))
 
 and eval_app (s : State.t) (env : Env.t) : Term.head * Term.spine -> Value.t = function
   | (tH, tS) -> eval_val_app s env (eval_head s env tH, List.map (eval s env) tS)

@@ -279,7 +279,7 @@ let infer_literal = function
 let infer_prim loc env s =
   let open Prim in
   let open Type in
-  let builtin prim = Builtin (`fake, prim) in
+  let builtin prim = Builtin (`inferred loc, prim) in
   function
   | Eq ->
     let s, x = fresh_tmvar s "a" in
@@ -335,7 +335,7 @@ let rec infer_tm (env : infer_env) (s : infer_state) : Term.t -> (infer_state * 
     let s, a = fresh_tmvar s "a" in
     let tp_a = TMVar (`inferred loc_x, a) in
     let env = extend_ctx env @@ (x, mono tp_a) in
-    dprintf env "@[<hv 2>Entering function.@ ";
+    dprintf env "@[<v 2>Entering function.@ ";
     Result.bind (push_scoped env (`term e) @@ infer_tm env s e) @@ fun (s, tp_b) ->
     let arr = Arrow (`inferred loc, tp_a, tp_b) in
     dprintf env "@]@[<v 2>Inferred function type@ %a@]@," (P.print_tp 0) (TMVar.apply_sub s.tmvars arr);
@@ -345,7 +345,7 @@ let rec infer_tm (env : infer_env) (s : infer_state) : Term.t -> (infer_state * 
     Result.bind (push_scoped env (`spine tS) @@ infer_from_spine loc env s tS) @@ fun (s, aS, a_ret) ->
     Result.bind begin
       unify loc
-        (`head_spine (Ctx.to_scope env.ctx, (tH, aH), (tS, aS)))
+        (`head_spine (Ctx.to_scope env.ctx, (tH, TMVar.apply_sub s.tmvars aH), (tS, TMVar.apply_sub s.tmvars aS)))
         (Unify.types s.tmvars (aH, aS))
     end @@ set_tmvars s @@ fun s ->
     Result.ok (s, a_ret)
@@ -511,9 +511,10 @@ let check_decl ppf (sg : Term.t Signature.t) : Term.t Decl.t -> Term.t Signature
             Result.ok tpsc
           | Some typ ->
             let s, user_tp = instantiate s typ in
+            let tp = TMVar.apply_sub s.tmvars tp in
             Format.fprintf ppf "@[<hv 2>@[<hv 2>Unifying user type@ %a@]@ @[<hv 2>with inferred type@ %a@]@]@,"
               (P.print_tp 0) user_tp
-              (P.print_tp 0) (TMVar.apply_sub s.tmvars tp);
+              (P.print_tp 0) tp;
             Result.bind (unify loc (`decl (name, user_tp, tp)) (Unify.types s.tmvars (user_tp, tp))) @@ fun tmvars ->
             (* by unification, [tmvars]typ = [tmvars]tp *)
             Format.fprintf ppf "@[<v>@[<v 2>Applying substitution:@,%a@]@,@[<v 2>to user type:@,%a@]@]@,"

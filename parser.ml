@@ -529,8 +529,8 @@ let head () : Term.head t =
     pure @@ Term.Const (loc_const, ctor_name)
   in
   let prim () =
-    bind (choice' [op_bang; op_minus; keyword "substring"]) @@ fun (loc, _) ->
-    pure @@ Term.Prim (loc, Prim.Not)
+    bind (choice' [op_bang; op_minus; keyword "substring"]) @@ fun (loc, op) ->
+    pure @@ Term.Prim (loc, prim_of_op op)
   in
   choice [prim; variable; ctor]
 

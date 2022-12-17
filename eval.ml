@@ -124,7 +124,16 @@ let rec eval (s : State.t) (env : Env.t) : Term.t -> Value.t = function
     eval s env' e2
   | Match (loc, e, cases) -> eval_match loc s env (eval s env e) cases
 
-and eval_clo_app s env : var_name list * Term.t * Value.t list -> Value.t = function
+(** Performs an application of a closure to a spine of values.
+    Values from the spine are associated one by one with variables from the
+    closure, extending the environment.
+    If there are variable and value spines run out together, then we simply
+    evaluate the body of the closure.
+    If we run out of values first, then we construct a new closure for the
+    remaining variables.
+    If we run out of variables first, then we evaluate the body of the closure
+    and continue applying the remaining value spine to the result. *)
+and eval_clo_app s env : var_name list * Term.t * Value.spine -> Value.t = function
   | (x :: xS, t, v :: vS) ->
     let entry = Env.alloc_entry ~contents: (Some v) x in
     eval_clo_app s (Env.extend env entry) (xS, t, vS)
@@ -132,7 +141,12 @@ and eval_clo_app s env : var_name list * Term.t * Value.t list -> Value.t = func
   | (xS, t, []) -> Clo (env, xS, t)
   | ([], t, vS) -> eval_val_app s env (eval s env t, vS)
 
-and eval_val_app s env : Value.t * Value.t list -> Value.t = function
+(** Performs the application of a value to a spine of values.
+    If the spine is empty, then this simply returns the value head.
+    Otherwise, the behaviour depends on the value head.
+    Constructors simply accumulate the value spine into their own spine. *)
+and eval_val_app s env : Value.t * Value.spine -> Value.t = function
+  | vH, [] -> vH
   | Value.Clo (env', xS, t), vS -> eval_clo_app s env' (xS, t, vS)
   | Value.Const (c, vS1), vS2 -> Value.Const (c, vS1 @ vS2)
   | Value.Prim prim, vS -> eval_prim s env (prim, vS)

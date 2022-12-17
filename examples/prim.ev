@@ -1,0 +1,16 @@
+def negate : Int -> Int =
+  fun n -> -n
+
+def minus : Int -> Int -> Int =
+  fun n -> fun k -> n + -k
+
+def fact : Int -> Int =
+  let rec go =
+    fun n -> fun acc ->
+    match n == 0 with
+    | true -> acc
+    | false -> go (minus n 1) (acc * n)
+  in
+  fun n -> go n 1
+
+def fact5 = fact 5

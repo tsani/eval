@@ -546,11 +546,11 @@ let rec term () : Term.t t =
   let lam () : Term.t t =
     label "function literal" @@
     bind kw_fun @@ fun (loc_fun, _) ->
-    bind lident @@ fun (loc_x, x) ->
+    bind (some lident) @@ fun xs ->
     bind op_arrow @@ fun _ ->
     bind (force term) @@ fun body ->
     let loc = Loc.Span.(join loc_fun @@ Term.loc_of_tm body) in
-    pure @@ Term.Fun (loc, (loc_x, x), body)
+    pure @@ List.fold_right (fun x e -> Term.Fun (loc, x, e)) xs body
   in
   let let_ () : Term.t t =
     label "let-expression" @@

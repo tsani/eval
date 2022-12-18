@@ -139,9 +139,8 @@ module Internal = struct
       fprintf ppf "%a@[<hv 2>%a@ %a@]%a"
         lparen (lvl > 10)
         print_head ()
-        (print_spine 10 scope) tS
+        (print_spine 11 scope) tS
         rparen (lvl > 10)
-
 
   and print_spine ?(sep = pp_print_space) lvl scope ppf : Term.t list -> unit =
     pp_print_list ~pp_sep: sep (print_tm lvl scope) ppf
@@ -219,13 +218,13 @@ module Internal = struct
       pp_print_list ~pp_sep: (fun ppf _ -> ()) (fun ppf x -> fprintf ppf " %s" x)
     in
     let print_ctor ppf Decl.({ name; fields }) =
-      fprintf ppf "| @[<hv 2>%s@ @[%a@]@]"
+      fprintf ppf "@ | @[<hv 2>%s@ @[%a@]@]"
         name
         (pp_print_list ~pp_sep: pp_print_space (print_tp 10)) fields
     in
     let print_decl ppf = function
       | Decl.(TpDecl { tvar_binders; name; constructors }) ->
-        fprintf ppf "@[<hv 2>type %s%a =@ %a@]"
+        fprintf ppf "@[<hv 2>type %s%a =%a@]"
           name
           print_tvar_binders tvar_binders
           (pp_print_list ~pp_sep: pp_print_cut print_ctor) constructors

@@ -107,10 +107,33 @@ let eval_head (s : State.t) (env : Env.t) : Term.head -> Value.t = function
   | Const (_, c) -> Value.Const (c, [])
   | Prim (_, prim) -> Value.Prim prim
 
+let eval_prim s env (prim, vS) : Value.t =
+  let open Prim in
+  let open Value in
+  match prim, vS with
+  | Eq, [v1; v2] -> Lit (BoolLit (value_eq (v1, v2)))
+  | Lt, [Lit (IntLit i1); Lit (IntLit i2)] -> Lit (BoolLit (i1 < i2))
+  | Not, [Lit (BoolLit b)] -> Lit (BoolLit (not b))
+  | And, [Lit (BoolLit b1); Lit (BoolLit b2)] -> Lit (BoolLit (b1 && b2))
+  | Or, [Lit (BoolLit b1); Lit (BoolLit b2)] -> Lit (BoolLit (b1 || b2))
+  | CharAt, [Lit (StringLit s); Lit (IntLit i)] -> Lit (CharLit (String.get s i))
+  | SubString, [Lit (StringLit s); Lit (IntLit i); Lit (IntLit n)] -> Lit (StringLit (String.sub s i n))
+  | Plus, [Lit (IntLit n1); Lit (IntLit n2)] -> Lit (IntLit (n1 + n2))
+  | Times, [Lit (IntLit n1); Lit (IntLit n2)] -> Lit (IntLit (n1 * n2))
+  | Neg, [Lit (IntLit n)] -> Lit (IntLit (-n))
+  | Div, [Lit (IntLit n1); Lit (IntLit (n2))] -> Lit (IntLit (n1 / n2))
+
+let rec collapse_funs : Term.t -> var_name list * Term.t = function
+  | Fun (_, (_, x), e) ->
+    let (xs, e) = collapse_funs e in
+    (x :: xs, e)
+  | e -> ([], e)
+
 let rec eval (s : State.t) (env : Env.t) : Term.t -> Value.t = function
   | Lit (_, lit) -> Value.Lit lit
-  | Fun (_, (_, x), e) ->
-    let v = Value.Clo (env, [x], e) in
+  | Fun _ as e_f ->
+    let (xs, e) = collapse_funs e_f in
+    let v = Value.Clo (env, xs, e) in
     debug_print s "@[<hv 2>Construct closure@ %a@]@," (P.print_value 0) v;
     v
   | App (_, tH, tS) -> eval_app s env (tH, tS)
@@ -151,22 +174,6 @@ and eval_val_app s env : Value.t * Value.spine -> Value.t = function
   | Value.Const (c, vS1), vS2 -> Value.Const (c, vS1 @ vS2)
   | Value.Prim prim, vS -> eval_prim s env (prim, vS)
   | vH, _ -> RuntimeError.apply_non_clo Loc.Span.fake vH
-
-and eval_prim s env (prim, vS) : Value.t =
-  let open Prim in
-  let open Value in
-  match prim, vS with
-  | Eq, [v1; v2] -> Lit (BoolLit (value_eq (v1, v2)))
-  | Lt, [Lit (IntLit i1); Lit (IntLit i2)] -> Lit (BoolLit (i1 < i2))
-  | Not, [Lit (BoolLit b)] -> Lit (BoolLit (not b))
-  | And, [Lit (BoolLit b1); Lit (BoolLit b2)] -> Lit (BoolLit (b1 && b2))
-  | Or, [Lit (BoolLit b1); Lit (BoolLit b2)] -> Lit (BoolLit (b1 || b2))
-  | CharAt, [Lit (StringLit s); Lit (IntLit i)] -> Lit (CharLit (String.get s i))
-  | SubString, [Lit (StringLit s); Lit (IntLit i); Lit (IntLit n)] -> Lit (StringLit (String.sub s i n))
-  | Plus, [Lit (IntLit n1); Lit (IntLit n2)] -> Lit (IntLit (n1 + n2))
-  | Times, [Lit (IntLit n1); Lit (IntLit n2)] -> Lit (IntLit (n1 * n2))
-  | Neg, [Lit (IntLit n)] -> Lit (IntLit (-n))
-  | Div, [Lit (IntLit n1); Lit (IntLit (n2))] -> Lit (IntLit (n1 / n2))
 
 and eval_app (s : State.t) (env : Env.t) : Term.head * Term.spine -> Value.t = function
   | (tH, tS) -> eval_val_app s env (eval_head s env tH, List.map (eval s env) tS)

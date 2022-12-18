@@ -39,6 +39,11 @@ end
 
 module Prim = struct
   type t = Eq | Lt | Not | And | Or | CharAt | SubString | Plus | Times | Neg | Div
+
+  let arity = function
+    | Not | Neg -> 1
+    | Eq | Lt | And | Or | CharAt | Plus | Times | Div -> 2
+    | SubString -> 3
 end
 
 (** Built-in types. *)
@@ -439,13 +444,13 @@ module Internal = struct
     let lookup_ctor c sg = StringMap.find_opt c sg.ctors
 
     let lookup_tm' c sg = match lookup_tm c sg with
-      | None -> raise @@ Util.Invariant ("tm " ^ c ^ " is declared")
+      | None -> Util.invariant ("tm " ^ c ^ " is declared")
       | Some x -> x
     let lookup_tp' c sg = match lookup_tp c sg with
-      | None -> raise @@ Util.Invariant ("tp " ^ c ^ " is declared")
+      | None -> Util.invariant ("tp " ^ c ^ " is declared")
       | Some x -> x
     let lookup_ctor' c sg = match lookup_ctor c sg with
-      | None -> raise @@ Util.Invariant ("ctor " ^ c ^ " is declared")
+      | None -> Util.invariant ("ctor " ^ c ^ " is declared")
       | Some x -> x
 
     let declare_tp (sg : 'a t) (d : Decl.tp) : 'a t =

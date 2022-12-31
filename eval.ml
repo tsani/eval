@@ -107,7 +107,7 @@ let eval_head (s : State.t) (env : Env.t) : Term.head -> Value.t = function
   | Const (_, c) -> Value.Const (c, [])
   | Prim (_, prim) -> Value.Prim prim
 
-let eval_prim s env (prim, vS) : Value.t =
+let eval_prim s (prim, vS) : Value.t =
   let open Prim in
   let open Value in
   match prim, vS with
@@ -150,33 +150,32 @@ let rec eval (s : State.t) (env : Env.t) : Term.t -> Value.t = function
 (** Performs an application of a closure to a spine of values.
     Values from the spine are associated one by one with variables from the
     closure, extending the environment.
-    If there are variable and value spines run out together, then we simply
-    evaluate the body of the closure.
+    If the variable and value spines run out together, then we simply evaluate
+    the body of the closure.
     If we run out of values first, then we construct a new closure for the
     remaining variables.
     If we run out of variables first, then we evaluate the body of the closure
     and continue applying the remaining value spine to the result. *)
 and eval_clo_app s env : var_name list * Term.t * Value.spine -> Value.t = function
   | (x :: xS, t, v :: vS) ->
-    let entry = Env.alloc_entry ~contents: (Some v) x in
-    eval_clo_app s (Env.extend env entry) (xS, t, vS)
+    eval_clo_app s Env.(extend env @@ alloc_entry ~contents: (Some v) x) (xS, t, vS)
   | ([], t, []) -> eval s env t
   | (xS, t, []) -> Clo (env, xS, t)
-  | ([], t, vS) -> eval_val_app s env (eval s env t, vS)
+  | ([], t, vS) -> eval_val_app s (eval s env t, vS)
 
 (** Performs the application of a value to a spine of values.
     If the spine is empty, then this simply returns the value head.
     Otherwise, the behaviour depends on the value head.
     Constructors simply accumulate the value spine into their own spine. *)
-and eval_val_app s env : Value.t * Value.spine -> Value.t = function
+and eval_val_app s : Value.t * Value.spine -> Value.t = function
   | vH, [] -> vH
   | Value.Clo (env', xS, t), vS -> eval_clo_app s env' (xS, t, vS)
   | Value.Const (c, vS1), vS2 -> Value.Const (c, vS1 @ vS2)
-  | Value.Prim prim, vS -> eval_prim s env (prim, vS)
+  | Value.Prim prim, vS -> eval_prim s (prim, vS)
   | vH, _ -> RuntimeError.apply_non_clo Loc.Span.fake vH
 
 and eval_app (s : State.t) (env : Env.t) : Term.head * Term.spine -> Value.t = function
-  | (tH, tS) -> eval_val_app s env (eval_head s env tH, List.map (eval s env) tS)
+  | (tH, tS) -> eval_val_app s (eval_head s env tH, List.map (eval s env) tS)
 
 and eval_match loc (s : State.t) (env : Env.t) (scrutinee : Value.t) (cases : case list) : Value.t =
   let rec go = function

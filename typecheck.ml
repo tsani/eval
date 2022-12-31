@@ -317,20 +317,6 @@ let rec infer_tm (env : infer_env) (s : infer_state) : Term.t -> (infer_state * 
   let open Term in let open Type in
   function
   | Lit (loc, lit) -> Result.ok (s, Builtin (`inferred loc, infer_literal lit))
-                        (*
-  | Const (loc, c, spine) ->
-    let s, ctor_tp = instantiate_ctor_type env s c in
-    Result.bind (infer_ctor_from_spine loc env s spine) @@ fun (s, inferred_ctor_tp, result_tp) ->
-    dprintf env "Unifying constructor type@,";
-    let ctor_tp' = TMVar.apply_sub s.tmvars ctor_tp in
-    let inferred_ctor_tp' = TMVar.apply_sub s.tmvars inferred_ctor_tp in
-    Result.bind begin
-      unify loc
-        (`ctor_spine (Ctx.to_scope env.ctx, (c, ctor_tp'), (spine, inferred_ctor_tp')))
-        (Unify.types s.tmvars (ctor_tp, inferred_ctor_tp))
-    end @@ fun tmvars ->
-    Result.ok ({ s with tmvars }, result_tp)
-                           *)
   | Fun (loc, (loc_x, x), e) ->
     let s, a = fresh_tmvar s "a" in
     let tp_a = TMVar (`inferred loc_x, a) in

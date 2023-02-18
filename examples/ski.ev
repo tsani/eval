@@ -20,10 +20,6 @@ def rec fold_list : (a -> b -> b) -> List a -> b -> b =
   | Nil -> e
   | Cons x xs -> f x (fold_list f xs e)
 
-type Bool =
-  | True
-  | False
-
 def rec plus : Nat -> Nat -> Nat =
   fun n -> fun m -> match n with
   | Z -> m
@@ -59,36 +55,31 @@ def half_of_four = halve four
 type Unit =
   | U
 
-def bool = fun b -> fun k1 -> fun k2 -> match b with
-  | True -> k1 U
-  | False -> k2 U
-
 def rec list_eq : (a -> a -> Bool) -> List a -> List a -> Bool =
-  fun eq -> fun l1 -> fun l2 ->
+  fun eq l1 l2 ->
   match l1 with
   | Nil -> (match l2 with
-    | Nil -> True
-    | _ -> False)
-  | Cons x xs -> (match l2 with
-    | Nil -> False
-    | Cons y ys ->
-      bool (eq x y)
-        (fun u -> list_eq eq xs ys)
-        (fun u -> False))
+    | Nil -> true
+    | _ -> false)
+  | Cons x xs -> match l2 with
+    | Nil -> false
+    | Cons y ys -> match eq x y with
+      | true -> list_eq eq xs ys
+      | false -> false
 
-def rec nat_eq = fun n -> fun m ->
+def rec nat_eq = fun n m ->
   match n with
   | Z -> (match m with
-    | Z -> True
-    | _ -> False)
+    | Z -> true
+    | _ -> false)
   | S n -> (match m with
-    | Z -> False
+    | Z -> false
     | S m -> nat_eq n m)
 
 def length = fun l -> fold_list (fun x -> fun len -> S len) l Z
 
-def rec replicate = fun n -> fun x ->
-  match n with
+def rec replicate =
+  fun n x -> match n with
   | Z -> Nil
   | S n -> Cons x (replicate n x)
 
@@ -106,10 +97,12 @@ def list_of_lists = replicate five four_fours
 
 def sums = map sum_list list_of_lists
 
-def rec forall = fun p -> fun l -> match l with
-  | Nil -> True
+def rec forall = fun p l -> match l with
+  | Nil -> true
   | Cons x xs ->
-    bool (p x) (fun u -> forall p xs) (fun u -> False)
+    match p x with
+    | true -> forall p xs
+    | false -> false
 
 def test2 = forall (nat_eq sixteen) sums
 
@@ -119,13 +112,14 @@ type Exp =
   | Lam Exp
   | Clo (List Exp) Exp
 
-def rec index = fun n -> fun l -> match n with
+def rec index = fun n l -> match n with
   | Z -> (match l with
     | Cons x _ -> x)
   | S n -> (match l with
     | Cons _ xs -> index n xs)
 
-def rec eval : List Exp -> Exp -> Exp = fun env -> fun e -> match e with
+def rec eval : List Exp -> Exp -> Exp =
+  fun env e -> match e with
   | Var i -> index i env
   | App e1 e2 -> (match eval env e1 with
     | Clo env1 body ->

@@ -1,0 +1,14 @@
+type List a =
+  | Nil
+  | Cons a (List a)
+
+def rec fold_list : (a -> b -> b) -> List a -> b -> b =
+  fun f l e -> match l with
+  | Nil -> e
+  | Cons x xs -> f x (fold_list f xs e)
+
+def list = Cons 5 (Cons 4 (Cons 3 (Cons 2 (Cons 1 (Cons 0 Nil)))))
+
+def sum = fun l -> fold_list (fun x y -> x + y) l 0
+
+def n = sum list

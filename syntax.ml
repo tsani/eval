@@ -292,6 +292,13 @@ module Internal = struct
       | LiteralPattern (loc, _) -> loc
       | VariablePattern (loc, _) -> loc
       | WildcardPattern loc -> loc
+
+    (** Decomposes nested functions into a sequence of names and the innermost body. *)
+    let rec collapse_funs : t -> var_name list * t = function
+      | Fun (_, (_, x), e) ->
+        let (xs, e) = collapse_funs e in
+        (x :: xs, e)
+      | e -> ([], e)
   end
 
   (* A value is the result of evaluating a term. *)

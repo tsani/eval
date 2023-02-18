@@ -123,12 +123,6 @@ let eval_prim s (prim, vS) : Value.t =
   | Neg, [Lit (IntLit n)] -> Lit (IntLit (-n))
   | Div, [Lit (IntLit n1); Lit (IntLit (n2))] -> Lit (IntLit (n1 / n2))
 
-let rec collapse_funs : Term.t -> var_name list * Term.t = function
-  | Fun (_, (_, x), e) ->
-    let (xs, e) = collapse_funs e in
-    (x :: xs, e)
-  | e -> ([], e)
-
 let rec eval (s : State.t) (env : Env.t) : Term.t -> Value.t = function
   | Lit (_, lit) -> Value.Lit lit
   | Fun _ as e_f ->

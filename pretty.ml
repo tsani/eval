@@ -63,10 +63,6 @@ module Internal = struct
     | StringLit s -> fprintf ppf "\"%s\"" s (* TODO handle escapes *)
     | IntLit n -> fprintf ppf "%d" n
 
-  let rec collapse_funs : Term.t -> var_name list * Term.t = function
-    | Fun (_, (_, x), e) -> let (xs, e) = collapse_funs e in (x :: xs, e)
-    | e -> ([], e)
-
   let rec print_tm lvl scope (ppf : formatter) : Term.t -> unit = function
     | Lit (_, lit) -> fprintf ppf "%a" print_literal lit
     | Fun (_, (_, x), e) ->

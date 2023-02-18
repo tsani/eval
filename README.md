@@ -10,7 +10,7 @@ Done:
 - Definition of the syntax. See `syntax.ml`.
 - Evaluation of terms, including pattern-matching and recursion, and top-level
   declarations. See `eval.ml`.
-- Pretty-printing of terms (but it's not very pretty). See `pretty.ml`.
+- Pretty-printing of terms. See `pretty.ml`.
 - Unification. See `unify.ml`.
 - Typechecking. See `typecheck.ml`.
 - Some example programs. See `examples/ski.ev`.
@@ -23,6 +23,27 @@ Done:
 
 To do:
 - Proper build system: currently I build with a bash script.
-- Syntactic sugar: allow things like `fun x y z -> ...` instead of having to
-  repeat `fun`.
 - Compilation?
+
+Structure
+-----------
+
+- `Syntax`: definitions of different ASTs
+  * external syntax: this is close to what the user writes
+  * internal syntax: what we typecheck
+  * values
+  * various intermediate representations
+- `Loc`: source locations
+- `Pretty`: pretty-printing internal syntax and values
+- `Parser`: hand-written parser combinators that generate external syntax from a
+  string.
+- `Scopecheck`: converts external syntax to internal syntax, disambiguates names
+  (locals vs references), scope-checks all identifiers.
+- `TMVar`: unification variables, aka "type metavariables" (TMVars); type substitutions
+- `Unify`: unification of types
+- `Typecheck`: Hindley-Milner type inference using unification
+- `Eval`: evaluator for internal syntax, turns internal syntax into a value.
+- `Util`: miscellaneous
+- `Result`: either monad and helpers
+
+The main flow of data is: text -> `Parser` -> `Scopecheck` -> `Typecheck` -> `Eval`

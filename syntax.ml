@@ -347,6 +347,9 @@ module Internal = struct
       | Some _ -> raise (Util.Invariant "clo ref must be empty when updated")
 
     let lookup : t -> index -> entry option = lookup_var
+    let lookup' env i = match lookup env i with
+        | Some v -> v
+        | None -> Util.invariant "lookup' must succeed"
 
     (* Forgets the values associated to the variables, keeping only their names *)
     let to_scope : t -> Scope.t = List.map (fun (x, _) -> x)
@@ -568,5 +571,82 @@ module Internal = struct
         | _ -> None
       end
       | _ -> None
+  end
+end
+
+(** Syntax of terms after closure conversion.
+    The point of this syntax is that the construction of anonymous functions capturing their
+    definition environment is eliminated.
+    The construction of a closure is made explicit via an MkClo node, which specifies the _name_ of
+    a function together with an _environment renaming_.
+
+    The operational semantics of an MkClo is to compose the environment renaming with the current
+    environment to construct a minimal environment required to later apply the closure.
+
+    The evaluation judgment for closed syntax is:
+        rho_e; rho_p |- t !! v
+    meaning that in environments `rho_e` and `rho_p`, we evaluate a term `t` to a value `v`.
+
+    There are two environments because in closed syntax there are two kinds of variables:
+        - an EVar is an index into the closure environment `rho_e`
+        - a BVar is an index into the parameter environment `rho_p`
+
+    A 'pure function' (in contrast with a proper closure) has an empty closure environment `rho_e`
+    and the construction of a pure function can be detected when the environment renaming of an
+    `MkClo` is also empty.
+ *)
+module Closed = struct
+  module Term = struct
+    type var_kind = B (* a bound variable *) | E (* an environment variable *)
+
+    type var = var_kind * index
+
+    module EnvRen = struct
+      (* A renaming for an environment. Used to compute the restricted environment for a closure. *)
+      type t = var OSet.t
+      let insert x s = OSet.insert_index x s
+    end
+
+    type head =
+      | Var of var (* A variable, annotated for whether it refers to a param or a closed value. *)
+      | Ref of tm_name (* A reference to another definition. *)
+      | Const of ctor_name (* A reference to a constructor. *)
+      | Prim of Prim.t (* A reference to a primitive operation. *)
+
+    type pattern =
+      | ConstPattern of ctor_name * pattern list
+      | LiteralPattern of literal
+      | VariablePattern
+      | WildcardPattern
+
+    type t =
+      (* MkClo(theta, n, f) - Constructs a closure.
+         - f represents the code pointer for the closure.
+         - n is the count of arguments necessary to jump to the code pointer
+         - theta is an _environment renaming_ which maps the EVars in `f` to variables in the
+           enclosing scope. It is used at runtime to initialize the environment that gets
+           returned together with `f` by MkClo:
+               rho_e; rho_p |- MkClo(theta, n, f) !! Clo((rho_e, rho_p) . theta, n, f)
+           where `(rho_e, rho_p) . theta` is a composition of the environment pair with the
+           environment renaming. See note [env-comp] below.
+      *)
+      | MkClo of EnvRen.t * int * tm_name
+      | Lit of literal
+      | App of head * spine
+      | Let of rec_flag * t * t
+      | Match of t * case list
+
+    and spine = t list
+    and case =
+      | Case of pattern * t
+
+    (* NOTE [env-comp]
+       The composition of an environment pair an environment renaming is the following.
+       This function isn't ever actually used, but a realization of it appears when we compile a
+       MkClo node.  *)
+    let rec env_comp (rho_e, rho_p) theta = match theta with
+        | [] -> []
+        | (E, i) :: theta' -> Internal.Env.lookup' rho_e i :: env_comp (rho_e, rho_p) theta'
+        | (B, i) :: theta' -> Internal.Env.lookup' rho_p i :: env_comp (rho_e, rho_p) theta'
   end
 end

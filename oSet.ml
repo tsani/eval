@@ -6,7 +6,7 @@ let rec insert x = function
   | y :: ys when x = y -> y :: ys
   | y :: ys -> y :: insert x ys
 
-let insert_index x = function
+let rec insert_index x = function
   | [] -> ([x], 1)
   | y :: ys when x = y -> (y :: ys, 0)
   | y :: ys -> let ys, i = insert_index x ys in (y :: ys, i + 1)
@@ -18,7 +18,7 @@ let of_list l = List.fold_right insert empty l
 
 let to_list s = s
 
-let union s1 s2 = match s1 with
+let rec union s1 s2 = match s1 with
   | [] -> s2
   | x :: s1' -> union s1' (insert x s2)
 

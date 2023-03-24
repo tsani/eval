@@ -227,6 +227,14 @@ module Internal = struct
     let to_scope ctx = List.map (fun (x, _) -> x) ctx
   end
 
+  module EnvRen = struct
+    (* A renaming for an environment. This renaming only appears briefly during closure conversion
+       before it is translated into a Closed.EnvRen.t *)
+    type t = index OSet.t
+
+    let insert x s = OSet.insert_index x s
+  end
+
   (* A term is a an unevaluated expression. *)
   module Term = struct
     type loc = Loc.span
@@ -306,7 +314,7 @@ module Internal = struct
     type t =
       | Lit of literal
       | Const of ctor_name * spine
-      | Prim of Prim.t
+      | Prim of Prim.t (* this is definitely wrong; prims shouldn't be considered values *)
       | Clo of env * var_name list * Term.t
 
     and spine = t list
@@ -596,49 +604,50 @@ end
     `MkClo` is also empty.
  *)
 module Closed = struct
-  module Term = struct
-    type var_kind = B (* a bound variable *) | E (* an environment variable *)
+    module Term = struct
+        type var = [ `bound of index | `env of index ]
 
-    type var = var_kind * index
+        module EnvRen = struct
+            (* A renaming for an environment. Used to compute the restricted environment for a closure. *)
+            type t = var OSet.t
+            let insert x s = OSet.insert_index x s
+            let empty = OSet.empty
+            let fold = OSet.fold
+        end
 
-    module EnvRen = struct
-      (* A renaming for an environment. Used to compute the restricted environment for a closure. *)
-      type t = var OSet.t
-      let insert x s = OSet.insert_index x s
+        type head =
+            | Var of var (* A variable, annotated for whether it refers to a param or a closed value. *)
+            | Ref of tm_name (* A reference to another definition. *)
+            | Const of ctor_name (* A reference to a constructor. *)
+            | Prim of Prim.t (* A reference to a primitive operation. *)
+
+        type pattern =
+            | ConstPattern of ctor_name * pattern list
+            | LiteralPattern of literal
+            | VariablePattern
+            | WildcardPattern
+
+        type t =
+            (* MkClo(theta, n, f) - Constructs a closure.
+             - f represents the code pointer for the closure.
+               The name is actually lazily calculated due to the implementation of closure conversion.
+             - n is the count of arguments necessary to jump to the code pointer
+             - theta is an _environment renaming_ which maps the EVars in `f` to variables in the
+               enclosing scope. It is used at runtime to initialize the environment that gets
+               returned together with `f` by MkClo:
+                   rho_e; rho_p |- MkClo(theta, n, f) !! Clo((rho_e, rho_p) . theta, n, f)
+               where `(rho_e, rho_p) . theta` is a composition of the environment pair with the
+               environment renaming. See note [env-comp] below.
+            *)
+            | MkClo of EnvRen.t * int * (unit -> tm_name)
+            | Lit of literal
+            | App of head * spine
+            | Let of rec_flag * t * t
+            | Match of t * case list
+
+        and spine = t list
+        and case = Case of pattern * t
     end
-
-    type head =
-      | Var of var (* A variable, annotated for whether it refers to a param or a closed value. *)
-      | Ref of tm_name (* A reference to another definition. *)
-      | Const of ctor_name (* A reference to a constructor. *)
-      | Prim of Prim.t (* A reference to a primitive operation. *)
-
-    type pattern =
-      | ConstPattern of ctor_name * pattern list
-      | LiteralPattern of literal
-      | VariablePattern
-      | WildcardPattern
-
-    type t =
-      (* MkClo(theta, n, f) - Constructs a closure.
-         - f represents the code pointer for the closure.
-         - n is the count of arguments necessary to jump to the code pointer
-         - theta is an _environment renaming_ which maps the EVars in `f` to variables in the
-           enclosing scope. It is used at runtime to initialize the environment that gets
-           returned together with `f` by MkClo:
-               rho_e; rho_p |- MkClo(theta, n, f) !! Clo((rho_e, rho_p) . theta, n, f)
-           where `(rho_e, rho_p) . theta` is a composition of the environment pair with the
-           environment renaming. See note [env-comp] below.
-      *)
-      | MkClo of EnvRen.t * int * tm_name
-      | Lit of literal
-      | App of head * spine
-      | Let of rec_flag * t * t
-      | Match of t * case list
-
-    and spine = t list
-    and case =
-      | Case of pattern * t
 
     (* NOTE [env-comp]
        The composition of an environment pair an environment renaming is the following.
@@ -646,7 +655,6 @@ module Closed = struct
        MkClo node.  *)
     let rec env_comp (rho_e, rho_p) theta = match theta with
         | [] -> []
-        | (E, i) :: theta' -> Internal.Env.lookup' rho_e i :: env_comp (rho_e, rho_p) theta'
-        | (B, i) :: theta' -> Internal.Env.lookup' rho_p i :: env_comp (rho_e, rho_p) theta'
-  end
+        | `env i :: theta' -> Internal.Env.lookup' rho_e i :: env_comp (rho_e, rho_p) theta'
+        | `bound i :: theta' -> Internal.Env.lookup' rho_p i :: env_comp (rho_e, rho_p) theta'
 end

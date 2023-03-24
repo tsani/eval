@@ -27,3 +27,6 @@ val to_list : 'a t -> 'a list
 
 (* Turns a list into a set. This will deduplicate the elements of the list. *)
 val of_list : 'a list -> 'a t
+
+(* Folds the set. *)
+val fold : ('a -> 'b -> 'b) -> 'a t -> 'b -> 'b

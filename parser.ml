@@ -26,7 +26,7 @@ module State = struct
   }
 
   let map_loc (f : Loc.t -> Loc.t) (s : t) : t =
-    { s with here = f s.here }
+    { here = f s.here }
 
   let make filename = {
     here = Loc.initial filename;

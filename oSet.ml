@@ -26,3 +26,5 @@ let unions ss = List.fold_right union ss []
 
 (** delete s l removes all elements of l from s. *)
 let delete s l = List.filter (fun x -> not @@ List.mem x l) s
+
+let fold = List.fold_right

@@ -119,6 +119,7 @@ module Internal = struct
     | Neg, [t] -> uop "-" 9 t
     | SubString, ts ->
       print_simple_app lvl scope ppf ((fun ppf _ -> fprintf ppf "substring"), ts)
+    | _ -> Util.invariant "all internal syntax primops have correct number of arguments"
 
   and print_app lvl scope ppf : Term.head * Term.spine -> unit = function
     (* since Prims are usually operators, we handle printing them specially *)
@@ -192,6 +193,7 @@ module Internal = struct
     | Clo (env, xS, e) ->
       let e = expand_funs xS e in
       print_tm 0 (Env.to_scope env) ppf e
+    | Prim _ -> Util.invariant "prim is not actually a value"
 
   and print_value_spine lvl ppf : Value.spine -> unit =
     pp_print_list ~pp_sep: pp_print_space (print_value lvl) ppf
@@ -225,12 +227,15 @@ module Internal = struct
           print_tvar_binders tvar_binders
           (pp_print_list ~pp_sep: pp_print_cut print_ctor) constructors
       | Decl.(TmDecl { name; recursive }) ->
-        let Decl.({ typ = Some (_, typ); }) = Signature.lookup_tm' name sg_t in
-        let Decl.({ body = Some body }) = Signature.lookup_tm' name sg_e in
-        fprintf ppf "@[<hv 2>val %s : @[%a@] =@ @[%a@]@]"
-          name
-          (print_tp 0) typ
-          (print_value 0) body
+        begin match Signature.lookup_tm' name sg_t, Signature.lookup_tm' name sg_e with
+        | Decl.({ typ = Some (_, typ); }, { body = Some body }) ->
+          fprintf ppf "@[<hv 2>val %s : @[%a@] =@ @[%a@]@]"
+            name
+            (print_tp 0) typ
+            (print_value 0) body
+        | _ ->
+          Util.invariant "in printing an eval'd program we have both the type and value of each term"
+        end
     in
     fprintf ppf "@[<v>%a@]" (pp_print_list ~pp_sep: pp_print_cut print_decl) program
 end

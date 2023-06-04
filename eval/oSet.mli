@@ -1,5 +1,5 @@
 (* The type of a set whose elements have an associated index, as in a list. *)
-type 'a t
+type 'a t = 'a list
 
 (* An empty set. *)
 val empty : 'a t

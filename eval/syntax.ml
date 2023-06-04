@@ -1,3 +1,5 @@
+(* All Eval syntax and intermediate representations. *)
+
 type ctor_name = string
 type tp_name = string
 type tm_name = string
@@ -13,7 +15,8 @@ type rec_flag = Rec | NonRec
 let lookup_var : 'a list -> int -> 'a option = List.nth_opt
 
 (** A scope is a weak form of context, in which we merely track the names of variables, without any
-    associated information such as a type. *)
+    associated information such as a type. Scopes are used during the scopechecking phase that
+    transforms external syntax into internal syntax. *)
 module Scope = struct
   type entry = var_name
   type t = entry list
@@ -627,12 +630,6 @@ module Closed = struct
             let fold = OSet.fold
         end
 
-        type head =
-            | Var of var (* A variable, annotated for whether it refers to a param or a closed value. *)
-            | Ref of tm_name (* A reference to another definition. *)
-            | Const of ctor_name (* A reference to a constructor. *)
-            | Prim of Prim.t (* A reference to a primitive operation. *)
-
         type pattern =
             | ConstPattern of ctor_name * pattern list
             | LiteralPattern of literal
@@ -651,9 +648,13 @@ module Closed = struct
                where `(rho_e, rho_p) . theta` is a composition of the environment pair with the
                environment renaming. See note [env-comp] below.
             *)
-            | MkClo of EnvRen.t * int * (unit -> tm_name)
+            | Var of var
+            | Ref of tm_name
+            | Const of ctor_name
+            | Prim of Prim.t
+            | MkClo of EnvRen.t * int * tm_name
             | Lit of literal
-            | App of head * spine
+            | App of t * spine
             | Let of rec_flag * t * t
             | Match of t * case list
 

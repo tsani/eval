@@ -126,7 +126,7 @@ let rec hoist_env_ren w (theta_out, theta : ER.t * ER.t) : ER.t * ER.t =
         | `bound i -> failwith "hoist env_ren must not contain bvars" (* this shouldn't happen *)
         | `env i ->
             let (theta_out', v) = index w theta_out i in
-            (theta_out', ER.insert v theta') (* XXX this is suspicious *)
+            (theta_out', v :: theta') (* XXX this is suspicious *)
     in
     ER.fold f theta (theta_out, ER.empty)
 
@@ -137,6 +137,7 @@ let rec term (w : watermark) (theta : ER.t) : I.Term.t -> ER.t * CloTree.t * C.T
         let xs, e = I.Term.collapse_funs e in
         let w' = List.length xs in (* the watermark to use within the function body *)
         let theta_in, ct, e_closed = term w' ER.empty e in
+        (* [theta_in]e_closed = e *)
         let name = ref "[no name yet]" in
         let (theta', theta_in') = hoist_env_ren w' (theta, theta_in) in
         let path_el = String.concat "&" xs in

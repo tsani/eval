@@ -12,6 +12,8 @@ type rec_flag = Rec | NonRec
 (* Looks up a variable in a context or an environment. (They have the same structure.) *)
 let lookup_var : 'a list -> int -> 'a option = List.nth_opt
 
+(** A scope is a weak form of context, in which we merely track the names of variables, without any
+    associated information such as a type. *)
 module Scope = struct
   type entry = var_name
   type t = entry list
@@ -55,6 +57,7 @@ type literal =
   | StringLit of string
   | BoolLit of bool
 
+(** External syntax is essentially the representation stored in text files. *)
 module External = struct
   module Type = struct
     type t =
@@ -70,6 +73,7 @@ module External = struct
       | Named (loc, _, _) -> loc
   end
 
+  (** A term is something that we can evaluate. *)
   module Term = struct
     type loc = Loc.span
 
@@ -87,6 +91,12 @@ module External = struct
       | WildcardPattern loc -> loc
 
     type head =
+      (* in external syntax, we can't tell apart a local var ref from a ref to
+         another definition, so there is no case for "ref" -- we simply have 'Var'
+         and the kind of variable is disambiguated during scopechecking.
+         However, the external syntax does distinguish already between variables and constructors,
+         since variables use lowercase names, whereas constructors begin with an uppercase letter.
+         *)
       | Var of loc * var_name
       | Const of loc * ctor_name
       | Prim of loc * Prim.t
@@ -98,17 +108,13 @@ module External = struct
 
     type t =
       | Lit of loc * literal
-      (* in external syntax, we can't tell apart a local var ref from a ref to
-      another definition, so there is no case for "ref" *)
       | Fun of loc * (loc * var_name) * t
       | App of loc * head * spine
       | Let of loc * rec_flag * (loc * var_name) * t * t
       | Match of loc * t * case list
-      (* we distinguish function applications from constructor applications since constructors
-      use uppercase names. *)
 
      and spine = t list
-     and case = Case of Loc.span * pattern * t
+     and case = Case of loc * pattern * t
 
      let loc_of_tm = function
        | Lit (loc, _) -> loc
@@ -120,6 +126,8 @@ module External = struct
      let case_body (Case (_, _, body)) = body
   end
 
+  (** Declarations introduce new names. Processing a declaration typically causes a state change.
+   *)
   module Decl = struct
     (** A declaration for a term. *)
     type tm = {
@@ -130,12 +138,14 @@ module External = struct
       loc : Loc.span;
     }
 
+    (** A declaration for a constructor. *)
     type ctor = {
       name : ctor_name;
       fields : Type.t list;
       loc : Loc.span;
     }
 
+    (** A declaration for a type. *)
     type tp = {
       name : tp_name;
       tvar_binders : tvar_name list;
@@ -143,6 +153,7 @@ module External = struct
       loc : Loc.span;
     }
 
+    (** A toplevel declaration either introduces a named term, or a named type. *)
     type t =
       | TpDecl of tp
       | TmDecl of tm
@@ -151,10 +162,14 @@ module External = struct
       | TpDecl { loc } -> loc
       | TmDecl { loc } -> loc
 
+    (** A program is a sequence of declarations. *)
     type program = t list
   end
 end
 
+(** Internal syntax is the result of scopechecking, during which various disambiguations are
+    performed.
+    Internal syntax is the syntax that we typecheck. *)
 module Internal = struct
   module Type = struct
     (** The location of a type in a source file.
@@ -174,7 +189,8 @@ module Internal = struct
       | Arrow of loc * t * t
       | TVar of loc * tvar_name
       | TMVar of loc * tmvar_name (* often, the location of a TMVar is fake *)
-      | Named of loc * tp_name * t list (* an identifier for a user-defined data type and a list of type parameters *)
+      | Named of loc * tp_name * t list
+      (* ^ an identifier for a user-defined data type and a list of type parameters *)
 
     (** Gets the location of a type. This implementation doesn't know anything
     about type variable instantiations, so it will report the location of the
@@ -205,7 +221,7 @@ module Internal = struct
     (* Constructs a polytype from a list of binders and a monotype. *)
     let poly (tvar_binders : tvar_name list) (tp : t) : sc = (tvar_binders, tp)
 
-    (** Constructs an arrow type in a nice way. *)
+    (** Constructs an arrow type from a list of parameter types and a single return type. *)
     let arrows = List.fold_right (fun a ret -> Arrow (`fake, a, ret))
   end
 
@@ -326,11 +342,7 @@ module Internal = struct
       not guarded by a delaying construct such as `fun`, then it will be
       encountered during evaluation and looked up as None. We have detected an
       infinite loop! Otherwise, we will succeed in evaluating e1, and we can
-      reassign the reference to the value.
-
-      We also store the name of the variable and whether the variable is
-      recursively defined.
-    *)
+      reassign the reference to the value. *)
     and env_entry = var_name * t option ref
     and env = env_entry list
 

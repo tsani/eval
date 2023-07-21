@@ -1,3 +1,4 @@
+open BasicSyntax
 open Syntax
 open Internal
 open Type

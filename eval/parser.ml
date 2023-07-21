@@ -402,6 +402,7 @@ let lident =
 
 (* ***** Complex syntax parsers ***** *)
 
+open BasicSyntax
 open Syntax
 open Syntax.External
 

@@ -1,3 +1,7 @@
 #!/bin/bash
 
-ocamlopt -g -o eval oSet.mli oSet.ml result.ml util.ml loc.ml syntax.ml scopecheck.ml parser.ml pretty.ml close.ml eval.ml tMVar.ml unify.ml typecheck.ml main.ml && OCAMLRUNPARAM=b exec ./eval "$@"
+ocamlopt -g -o eval oSet.mli oSet.ml result.ml util.ml loc.ml \
+    basicSyntax.ml scope.ml synint.ml syntax.ml \
+    scopecheck.ml parser.ml pretty.ml close.ml eval.ml tMVar.ml unify.ml typecheck.ml \
+    main.ml &&
+OCAMLRUNPARAM=b exec ./eval "$@"

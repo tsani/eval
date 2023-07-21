@@ -1,3 +1,4 @@
+open BasicSyntax
 open Syntax
 open Internal
 open Type
@@ -8,8 +9,6 @@ type unify_error = [
 ]
 
 type 'a result = (unify_error, 'a) Result.t
-
-let _ = Result.Syntax.(Result.Ok 5 $ fun x -> Result.Ok 5)
 
 (* Extends the given substitution of tmvars to make the given types equal.
  * The interpretation of the given types is: expected, actual.

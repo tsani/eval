@@ -1,4 +1,5 @@
 open Format
+open BasicSyntax
 open Syntax
 
 let lparen ppf cond = if cond then fprintf ppf "("
@@ -244,6 +245,8 @@ module Closed = struct
     open Closed
     open Term
 
+    let print_prim ppf p = Util.not_implemented ()
+
     let print_literal ppf = function
         | BoolLit true -> fprintf ppf "true"
         | BoolLit false -> fprintf ppf "false"
@@ -255,11 +258,13 @@ module Closed = struct
         | `bound i -> fprintf ppf "#b_%d" i
         | `env i -> fprintf ppf "#e_%d" i
 
-    let rec print_tm lvl ppf = function
+    let print_head ppf = function
         | Var v -> print_var ppf v
         | Ref f -> fprintf ppf "%s" f
         | Const c -> fprintf ppf "%s" c
         | Prim p -> print_prim ppf p
+
+    let rec print_tm lvl ppf = function
         | MkClo (theta, n, f) -> fprintf ppf "mkclo(%a, %d, %s)" (print_env_ren ppf) theta n f
         | Lit l -> print_literal ppf l
         | App (tH, tS) -> print_app lvl ppf (tH, tS)
@@ -303,17 +308,17 @@ module Closed = struct
     and print_pat_spine lvl ppf : pattern list -> unit =
         pp_print_list ~pp_sep: pp_print_space (print_pattern lvl) ppf
 
-    and print_prim ppf p = Util.not_implemented ()
-
     and print_env_ren ppf theta = Util.not_implemented ()
 
-    and print_app lvl ppf : t * spine -> unit = function
+    and print_app lvl ppf : head * spine -> unit = function
         (* since Prims are usually operators, we handle printing them specially *)
         | (Prim prim, tS) -> print_prim_app lvl ppf (prim, tS)
         (* Variables and constructors work the same way. *)
         | (Var i, tS) ->
-          print_simple_app lvl ppf ((fun ppf () -> print_var ppf i), tS)
-        | (Const c, tS) | (Ref c, tS)->
+            print_simple_app lvl ppf ((fun ppf () -> print_var ppf i), tS)
+        | (Const c, tS) ->
+            print_simple_app lvl ppf ((fun ppf () -> fprintf ppf "%s" c), tS)
+        | (Ref c, tS)->
             print_simple_app lvl ppf ((fun ppf () -> fprintf ppf "%s" c), tS)
 
     and print_simple_app lvl ppf : 'u * spine -> unit = function

@@ -1,6 +1,7 @@
 (* Scopechecking turns external syntax (the result of parsing) into internal
 syntax, which can be typechecked and evaluated. *)
 
+open BasicSyntax
 open Syntax
 module I = Internal
 module E = External

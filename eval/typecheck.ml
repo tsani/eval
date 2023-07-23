@@ -108,7 +108,6 @@ let generalize (outer : (Type.loc * tmvar_name) list) (tp : Type.t) : Type.sc =
   (* Construct a substitution that eliminates the TMVars into TVars *)
   let next (a :: letters, tmvars) (loc, x) = match TMVar.lookup tmvars x with
     | `not_found ->
-      let prefix, n = TMVar.parse x in
       (letters, TMVar.extend_sub tmvars x ~inst: (Some (TVar (loc, a))))
       (* TODO something better than this trash *)
     | `inst t -> (letters, tmvars) (* in case of duplicates do nothing *)
@@ -116,7 +115,7 @@ let generalize (outer : (Type.loc * tmvar_name) list) (tp : Type.t) : Type.sc =
     (* Since we are constructing the substitution right here, and every entry we
        put in it is instantiated, we have the invariant that `uninst is an
        impossible case. *)
-    | `uninst -> raise @@ Util.Invariant "every tmvar is instantiated in the substitution we are building"
+    | `uninst -> Util.invariant "every tmvar is instantiated in the substitution we are building"
   in
   let (_, tmvars) = List.fold_left next (letters, TMVar.empty_sub) tmvar_locd_names in
   (* The substitution is in fact a renaming of TMVars to TVars and contains no

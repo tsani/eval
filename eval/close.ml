@@ -73,27 +73,30 @@ module Cloco = struct
         bind (f x) @@ fun y ->
         bind (traverse f xs) @@ fun ys ->
         pure (y :: ys)
+
+    (** Adds a new function to the current mapping, generating a new name for it. *)
+    let add_function (d : fn_desc) : tm_name t = fun _ s ->
+        let name = "%closure_" ^ string_of_int s.fn_name_counter in
+        ( { s with
+              fn_name_counter = s.fn_name_counter + 1;
+              fn_map = FnMap.add name d s.fn_map;
+          }
+        , name
+        )
+
+    (** Gets the current watermark. *)
+    let get_watermark : watermark t = fun w s -> (s, w)
+
+    (** Performs the given action with the current watermark shadowed by the given value. *)
+    let with_watermark (w : watermark) (m : 'a t) : 'a t = fun _ s -> m w s
+
+    (** Performs the given action with the watermark increased by the given value. *)
+    let bumped_watermark (w : watermark) (m : 'a t) : 'a t = fun w' s -> m (w + w') s
+
+    let get_env_ren : RawER.t t = fun w s -> (s, s.theta)
+
+    let put_env_ren (theta : RawER.t) : unit t = fun _ s -> { s with theta }, ()
 end
-
-(** Adds a new function to the current mapping, generating a new name for it. *)
-let add_function (d : fn_desc) : tm_name Cloco.t = fun _ s ->
-    let name = "%closure_" ^ string_of_int s.fn_name_counter in
-    ( { s with
-          fn_name_counter = s.fn_name_counter + 1;
-          fn_map = FnMap.add name d s.fn_map;
-      }
-    , name
-    )
-
-(** Gets the current watermark. *)
-let get_watermark : watermark Cloco.t = fun w s -> (s, w)
-
-(** Performs the given action with the current watermark shadowed by the given value. *)
-let with_watermark (w : watermark) (m : 'a Cloco.t) : 'a Cloco.t = fun _ s -> m w s
-
-let get_env_ren : RawER.t Cloco.t = fun w s -> (s, s.theta)
-
-let put_env_ren (theta : RawER.t) : unit Cloco.t = fun _ s -> { s with theta }, ()
 
 (* Whenever we encounter a variable, we compare it to the current watermark.
    If it's less than the current watermark, the variable is a bound variable. Easy.
@@ -112,8 +115,8 @@ let er_insert (i : index) : index Cloco.t =
     bind (put_env_ren theta') @@ fun _ ->
     pure j
 
-(* Closure-converts the index of a variable according to the active watermark, extending the
-   current environment renaming in case the index refers to an environment variable. *)
+(** Closure-converts the index of a variable according to the active watermark, extending the
+    current environment renaming in case the index refers to an environment variable. *)
 let index (i : index) : C.var Cloco.t =
     let open Cloco in
     bind get_watermark @@ fun w ->
@@ -121,39 +124,46 @@ let index (i : index) : C.var Cloco.t =
     bind (er_insert (i - w)) @@ fun j ->
     pure (`env j)
 
-(** Closure-converts an environment renaming. Each index appearing in the ER is reindexed according
-     to the current watermark, updating the current (raw) environment renaming. *)
+(** Closure-converts an environment renaming. Each index appearing in the given ER is reindexed
+    according to the current watermark, updating the current (raw) environment renaming. *)
 let env_ren (theta : RawER.t) : ER.t Cloco.t = Cloco.traverse index theta
 
 (** Runs the given action with an empty environment renaming, reindexing the resulting environment
     renaming in the presence of the outer one after.
-    Returns the reindexed*)
+    Returns the reindexed environment renaming obtained from running the inner computation. *)
 let er_pushed (m : 'a Cloco.t) : (ER.t * 'a) Cloco.t =
     let open Cloco in
     bind get_env_ren @@ fun theta -> (* save outer ER *)
-    bind (put_env_ren ER.empty) @@ fun _ ->
-    bind m @@ fun x ->
+    bind (put_env_ren ER.empty) @@ fun _ -> (* flush active ER *)
+    bind m @@ fun x -> (* run inner computation *)
     bind get_env_ren @@ fun theta' -> (* save inner ER *)
     bind (put_env_ren theta) @@ fun _ -> (* restore outer ER *)
-    (* reindex the inner ER *)
-    bind (env_ren theta') @@ fun theta' ->
+    bind (env_ren theta') @@ fun theta' -> (* reindex saved inner ER *)
     pure (theta', x)
 
 (* Closure-converts the head of an application according to a watermark, extending the given
    environment renaming in the case for a variable. *)
 let head : I.Term.head -> C.Term.head Cloco.t =
-    let open Cloco in
-    function
+    let open Cloco in function
     | I.Term.Var (_, i) ->
         bind (index i) @@ fun x -> pure (C.Term.Var x)
     | I.Term.Const (_, c) -> pure (C.Term.Const c)
     | I.Term.Ref (_, r) -> pure (C.Term.Ref r)
     | I.Term.Prim (_, p) -> pure (C.Term.Prim p)
 
+let bump_of_rec_flag = function
+    | Rec -> Cloco.bumped_watermark 1
+    | NonRec -> fun x -> x
+
+let rec pattern : I.Term.pattern -> C.Term.pattern = function
+    | I.Term.LiteralPattern (_, l) -> C.Term.LiteralPattern l
+    | I.Term.WildcardPattern _ -> C.Term.WildcardPattern
+    | I.Term.VariablePattern (_, _) -> C.Term.VariablePattern
+    | I.Term.ConstPattern (_, c, ps) -> C.Term.ConstPattern (c, List.map pattern ps)
+
 (* Closure-converts a term. *)
 let rec term : I.Term.t -> C.Term.t Cloco.t =
-    let open Cloco in
-    function
+    let open Cloco in function
     | I.Term.Fun _ as e ->
         let xs, e = I.Term.collapse_funs e in
         let w' = List.length xs in (* the watermark to use within the function body *)
@@ -161,15 +171,29 @@ let rec term : I.Term.t -> C.Term.t Cloco.t =
         bind (add_function { param_cnt = w'; body = e' }) @@ fun f ->
         pure @@ C.Term.MkClo (theta, w', f)
 
-    | I.Term.Let (_, _, (_, x), e1, e2) -> failwith "todo"
+    | I.Term.Let (_, rec_flag, (_, x), e1, e2) ->
+        bind (bump_of_rec_flag rec_flag @@ term e1) @@ fun e1' ->
+        bind (bumped_watermark 1 @@ term e2) @@ fun e2' ->
+        pure @@ C.Term.Let (rec_flag, e1', e2')
 
     | I.Term.App (_, tH, tS) ->
-            bind (head tH) @@ fun tH ->
-            bind (spine tS) @@ fun tS ->
-            pure (C.Term.App (tH, tS))
+        bind (head tH) @@ fun tH ->
+        bind (spine tS) @@ fun tS ->
+        pure (C.Term.App (tH, tS))
+
+    | I.Term.Match (_, e, cases) ->
+        bind (term e) @@ fun e' ->
+        bind (traverse case cases) @@ fun cases' ->
+        pure (C.Term.Match (e', cases'))
+
+and case : I.Term.case -> C.Term.case Cloco.t =
+    let open Cloco in function
+    | I.Term.Case (_, p, e) ->
+        let p' = pattern p in
+        bind (bumped_watermark (I.Term.count_pattern_vars p) @@ term e) @@ fun e' ->
+        pure (C.Term.Case (p', e'))
 
 and spine (tS : I.Term.spine) : C.Term.spine Cloco.t = Cloco.traverse term tS
-
 
 (* fun x -> let a = f _0 in ---- clo [] 1 @@ let a = f 0b in
    fun y -> let b = g _1 _0 in -- clo [0b] 1 @@ let b = g 0e 0b in

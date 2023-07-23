@@ -193,14 +193,7 @@ module Closed = struct
         }
 
         let defines_function { param_cnt ; _ } = param_cnt > 0
-    end
 
-    (* NOTE [env-comp]
-       The composition of an environment pair an environment renaming is the following.
-       This function isn't ever actually used, but a realization of it appears when we compile a
-       MkClo node.  *)
-    let rec env_comp (rho_e, rho_p) theta = match theta with
-        | [] -> []
-        | `env i :: theta' -> Internal.Env.lookup' rho_e i :: env_comp (rho_e, rho_p) theta'
-        | `bound i :: theta' -> Internal.Env.lookup' rho_p i :: env_comp (rho_e, rho_p) theta'
+        type program = tm list
+    end
 end

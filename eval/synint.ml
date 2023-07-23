@@ -134,6 +134,14 @@ module Term = struct
     in
     go
 
+  let count_pattern_vars : pattern -> int =
+      let rec go acc = function
+          | ConstPattern (_, _, ps) -> List.fold_left go acc ps
+          | VariablePattern (_, _) -> acc + 1
+          | WildcardPattern _ | LiteralPattern (_, _) -> acc
+      in
+      go 0
+
   (* Expands a sequence of variable names into functions around a given body. *)
   let expand_funs xS e = List.fold_right (fun x e -> Fun (Loc.Span.fake, (Loc.Span.fake, x), e)) xS e
 

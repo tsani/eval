@@ -32,43 +32,52 @@ type return_mode =
 
 type offset = int
 
-type instr =
-    (* Perform a function call. *)
-    | Call of call_mode
+module Instr = struct
+    type t =
+        (* Enter a function. *)
+        | Call of call_mode
 
-    | Ret of return_mode
+        (* Exit a function. *)
+        | Ret of return_mode
 
-    (* Construct a closure with `env_size` values popped from the stack and stored in its
-       environment. The top of the stack must be the function code address. The address of the CLO
-       object is left on the stack. *)
-    | MkClo of { env_size : int }
+        (* Construct a closure with `env_size` values popped from the stack and stored in its
+           environment. The top of the stack must be the function code address. The address of the CLO
+           object is left on the stack. *)
+        | MkClo of { env_size : int }
 
-    (* Construct a partial application with `held_count` held arguments (popped from the stack)
-       and `missing_count` missing arguments. The top of the stack must be the function code
-       address. The address of the PAP object is left on the stack. *)
-    | MkPap of { held_count : int ; missing_count : int }
+        (* Construct a partial application with `held_count` held arguments (popped from the stack)
+           and `missing_count` missing arguments. The top of the stack must be the function code
+           address. The address of the PAP object is left on the stack. *)
+        | MkPap of { held_count : int ; missing_count : int }
 
-    (* Construct a value with the given constructor tag and number of fields. That many values are
-       removed from the stack. The address of the object is left on the stack. *)
-    | Const of { ctor : int ; field_count : int }
+        (* Construct a value with the given constructor tag and number of fields. That many values are
+           removed from the stack. The address of the object is left on the stack. *)
+        | Const of { ctor : int ; field_count : int }
 
-    (* Compares the ctor tag of the top with the given tag. Doesn't consume the top.
-       If the tag matches, then all the fields of the constructor are loaded onto the stack.
-       Regardless, a boolean indicating the success of the match is loaded at the top after.
-     *)
-    | Match of { ctor : int }
+        (* Compares the ctor tag of the top with the given tag. Doesn't consume the top.
+           If the tag matches, then all the fields of the constructor are loaded onto the stack.
+           Regardless, a boolean indicating the success of the match is loaded at the top after.
+         *)
+        | Match of { ctor : int }
 
-    (* Drops the drop of the stack. *)
-    | Pop of stack_mode
+        (* Drops the drop of the stack. *)
+        | Pop of stack_mode
 
-    (* Loads an immediate value onto the top of the stack. *)
-    | Push of stack_mode * Int32.t
+        (* Loads an immediate value onto the top of the stack. *)
+        | Push of stack_mode * Int32.t
 
-    (* Loads an indirect value onto the top of the stack. *)
-    | Load of load_mode * int
+        (* Loads an indirect value onto the top of the stack. *)
+        | Load of load_mode * int
 
-    (* Performs a primitive operation. Consumes from the stack whatever the arity of the prim is *)
-    | Prim of BasicSyntax.Prim.t
+        (* Performs a primitive operation. Consumes from the stack whatever the arity of the prim is *)
+        | Prim of BasicSyntax.Prim.t
 
-    (* Performs a jump. Conditional jumps consume the top of the stack. *)
-    | Jump of jump_mode * offset
+        (* Performs a jump. Conditional jumps consume the top of the stack. *)
+        | Jump of jump_mode * offset
+end
+
+module Program = struct
+    type t = instr list
+
+    type builder = program -> program
+end

@@ -5,7 +5,8 @@
         - Distinguish parameter variables from environment variables.
         - Hoist all nested functions into top-level functions
 
-    The core entry point of this module is the function `term`, which closure-converts a term.
+    The core entry point of this module is the function `program`, which closure-converts the body
+    of every term declaration in a signature. (And throws away all type declarations.)
 
     See ../cloco.md
 *)
@@ -30,6 +31,9 @@ type fn_desc = {
 }
 
 module FnMap = Util.StringMap
+module CtorMap = Util.StringMap
+
+type arity = int
 
 (* Closure conversion is stateful:
     - as we encounter variables, we update the current environment renaming to include them
@@ -50,12 +54,16 @@ module State = struct
     }
 end
 
+module Ctx = struct
+    type t = { watermark : watermark; ctors : arity CtorMap.t }
+end
+
 module Cloco = struct
     (* Cloco monad. *)
-    type 'a t = watermark -> State.t -> State.t * 'a
+    type 'a t = Ctx.t -> State.t -> State.t * 'a
 
     let bind (m : 'a t) (k : 'a -> 'b t) : 'b t =
-        fun w s -> let (s', x) = m w s in k x w s'
+        fun ctx s -> let (s', x) = m ctx s in k x ctx s'
 
     let (>=>) (f : 'a -> 'b t) (g : 'b -> 'c t) : 'a -> 'c t =
         fun x -> bind (f x) g
@@ -85,13 +93,26 @@ module Cloco = struct
         )
 
     (** Gets the current watermark. *)
-    let get_watermark : watermark t = fun w s -> (s, w)
+    let get_watermark : watermark t = fun ctx s -> (s, ctx.watermark)
 
     (** Performs the given action with the current watermark shadowed by the given value. *)
-    let with_watermark (w : watermark) (m : 'a t) : 'a t = fun _ s -> m w s
+    let with_watermark (w : watermark) (m : 'a t) : 'a t =
+        fun ctx s -> m { ctx with watermark = w } s
 
     (** Performs the given action with the watermark increased by the given value. *)
-    let bumped_watermark (w : watermark) (m : 'a t) : 'a t = fun w' s -> m (w + w') s
+    let bumped_watermark (w : watermark) (m : 'a t) : 'a t =
+        fun ctx s -> m { ctx with watermark = ctx.watermark + w } s
+
+    let rec with_ctors (kvs : (ctor_name * arity) list) (m : 'a t) : 'a t =
+        let add_ctors ctors =
+            List.fold_left (fun ctors (c, n) -> CtorMap.add c n ctors) ctors kvs
+        in
+        fun ctx s -> m { ctx with ctors = add_ctors ctx.ctors } s
+
+    let lookup_arity c : arity t = fun ctx s ->
+        (s, match CtorMap.find_opt c ctx.ctors with
+            | None -> Util.invariant "[close] all constructors have known arities"
+            | Some n -> n)
 
     let get_env_ren : RawER.t t = fun w s -> (s, s.theta)
 
@@ -161,25 +182,64 @@ let rec pattern : I.Term.pattern -> C.Term.pattern = function
     | I.Term.VariablePattern (_, _) -> C.Term.VariablePattern
     | I.Term.ConstPattern (_, c, ps) -> C.Term.ConstPattern (c, List.map pattern ps)
 
+(** Eta-expands a constructor to account for a partial constructor application.
+    expand_const c n tS requires:
+        - n is the arity of c
+        - |tS| <= n
+    Then n - |tS| is the number of abstractions that are generated. *)
+let expand_const c n tS =
+    let var i = I.Term.(App (fake_loc, Var (fake_loc, i), [])) in
+    let fn t = I.Term.(Fun (fake_loc, (fake_loc, "!"), t)) in
+    let rec go n tS tS' return = match n, tS with
+    | 0, [] -> return tS'
+    | n, [] -> go (n-1) [] (var (n-1) :: tS') (fun t -> fn (return t))
+    | n, t :: tS -> go (n-1) tS (t :: tS') return
+    in
+    go n tS [] (fun tS' -> I.Term.(App (fake_loc, Const (fake_loc, c), List.rev tS')))
+
+(* Example:
+    expand_const c 3 [a]
+    -> go 3 [a] [] done
+    -> go 2 [] [a] done
+    -> go 1 [] [v 1; a] (fn . done)
+    -> go 0 [] [v 0; v 1; a] (fn . fn . done)
+    -> (fn . fn . done) [v 0; v 1; a]
+    -> `Fun ! ! -> c [a; v 1 ; v 0]` as required! *)
+
 (* Closure-converts a term. *)
 let rec term : I.Term.t -> C.Term.t Cloco.t =
-    let open Cloco in function
-    | I.Term.Fun _ as e ->
+    let open Cloco in
+    (* Closure-convert a term that is KNOWN to be a function. *)
+    let func e =
         let xs, e = I.Term.collapse_funs e in
         let w' = List.length xs in (* the watermark to use within the function body *)
         bind (er_pushed @@ with_watermark w' @@ term e) @@ fun (theta, e') ->
         bind (add_function { param_cnt = w'; body = e' }) @@ fun f ->
         pure @@ C.Term.MkClo (theta, w', f)
-
+    in
+    (* Closure-convert an application. *)
+    let app tH tS =
+        bind (head tH) @@ fun tH ->
+        bind (spine tS) @@ fun tS ->
+        pure (C.Term.App (tH, tS))
+    in
+    function
+    | I.Term.Fun _ as e -> func e
     | I.Term.Let (_, rec_flag, (_, x), e1, e2) ->
         bind (bump_of_rec_flag rec_flag @@ term e1) @@ fun e1' ->
         bind (bumped_watermark 1 @@ term e2) @@ fun e2' ->
         pure @@ C.Term.Let (rec_flag, e1', e2')
 
-    | I.Term.App (_, tH, tS) ->
-        bind (head tH) @@ fun tH ->
-        bind (spine tS) @@ fun tS ->
-        pure (C.Term.App (tH, tS))
+    | I.Term.(App (_, Const (_, c), tS)) ->
+        (* Look up arity of c and expand it into a Fun if it isn't saturated. *)
+        bind (lookup_arity c) @@ fun n ->
+        begin match expand_const c n tS with
+        | I.Term.Fun _ as e -> func e
+        | I.Term.App (_, tH, tS) -> app tH tS
+        | _ -> Util.invariant "expand_const returns a Fun or an App"
+        end
+
+    | I.Term.App (_, tH, tS) -> app tH tS
 
     | I.Term.Match (_, e, cases) ->
         bind (term e) @@ fun e' ->
@@ -195,7 +255,49 @@ and case : I.Term.case -> C.Term.case Cloco.t =
 
 and spine (tS : I.Term.spine) : C.Term.spine Cloco.t = Cloco.traverse term tS
 
+let tm_decl : I.Term.t I.Decl.tm -> C.Decl.tm Cloco.t =
+    let var i = C.Term.(App (Var (`bound i), [])) in
+    let rec gen_spine n = if n = 0 then [] else var (n-1) :: gen_spine (n-1) in
+    function
+    | I.Decl.({ body = None }) -> failwith "todo"
+    | I.Decl.({ name; rec_flag; body = Some body }) ->
+        Cloco.bind (bump_of_rec_flag rec_flag @@ term body) @@ function
+        | C.Term.MkClo (theta, n, f) when ER.is_empty theta ->
+            (* When the closure has an empty environment renaming, then the closure is
+               degenerate: it doesn't actually capture any environment variables.
+                In this case, we can omit the MkClo operation and immediately call `f`. *)
+            Cloco.pure @@ C.Decl.({
+                name;
+                body = C.Term.(App (Ref f, gen_spine n));
+                param_cnt = n;
+            })
+            (* TODO There should probably be one more case, for a recursive function whose ER only
+               holds one item. That one item would have to be the recursive function itself, so we
+               can substitute the one env var for the Ref name and eliminate the MkClo operation
+               again. *)
+        | body ->
+            (* Otherwise, the definition is considered to not (statically) define a
+               function. *)
+            Cloco.pure @@ C.Decl.({
+                name;
+                body;
+                param_cnt = 0;
+            })
+
+let rec program : I.Decl.program -> C.Decl.program Cloco.t =
+    let open Cloco in function
+    | [] -> pure []
+    | d :: ds -> match d with
+        (* we don't need type declarations anymore, do we *)
+        | I.Decl.(TpDecl { constructors }) ->
+            Cloco.with_ctors
+                (List.map (fun I.Decl.({ name; fields }) -> (name, List.length fields)) constructors )
+                (program ds)
+        | I.Decl.TmDecl d' ->
+            bind (tm_decl d') @@ fun d ->
+            bind (program ds) @@ fun ds ->
+            pure (d :: ds)
+
 (* fun x -> let a = f _0 in ---- clo [] 1 @@ let a = f 0b in
    fun y -> let b = g _1 _0 in -- clo [0b] 1 @@ let b = g 0e 0b in
    fun z -> h _3 _2 _1 _0 ----------- clo [0b; 1b; 0e] @@ h 1e y 0e 0b *)
-

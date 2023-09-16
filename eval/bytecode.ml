@@ -32,7 +32,17 @@ type return_mode =
 
 type offset = int
 
-module Instr = struct
+module type LABEL = sig
+    type t
+end
+
+module type INSTR = sig
+    type t
+
+    val compile : unit -> 'a
+end
+
+module Instr (L : LABEL) : INSTR = struct
     type t =
         (* Enter a function. *)
         | Call of call_mode
@@ -73,11 +83,13 @@ module Instr = struct
         | Prim of BasicSyntax.Prim.t
 
         (* Performs a jump. Conditional jumps consume the top of the stack. *)
-        | Jump of jump_mode * offset
+        | Jump of jump_mode * L.t
+
+    let compile () = failwith "todo"
 end
 
-module Program = struct
-    type t = instr list
+module Program (I : INSTR) = struct
+    type t = I.t list
 
-    type builder = program -> program
+    type builder = t -> t
 end

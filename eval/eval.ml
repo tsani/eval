@@ -192,9 +192,9 @@ let eval_decl (s : State.t) (d : Term.t Decl.t) : State.t = let open Decl in mat
     d.constructors
     @@ State.modify_signature (Signature.extend_tps d.name d) s
   | TmDecl { body = None; _ } -> Util.invariant "tm decl has a body"
-  | TmDecl ({ name; recursive; body = Some body; _ } as d) ->
+  | TmDecl ({ name; rec_flag; body = Some body; _ } as d) ->
     let s = s |> State.modify_signature
-      (if recursive then Signature.extend_tms name { d with body = None } else fun x -> x)
+      (if rec_flag = Rec then Signature.extend_tms name { d with body = None } else fun x -> x)
     in
     debug_print s "Evaluating definition for %s.@," name;
     let v = eval s Env.empty body in

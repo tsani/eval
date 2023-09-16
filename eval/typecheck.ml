@@ -459,7 +459,7 @@ let check_decl ppf (sg : Term.t Signature.t) : Term.t Decl.t -> Term.t Signature
   | TpDecl d ->
     Format.fprintf ppf "@[Define type %s@]@," d.name;
     Result.ok @@ Signature.declare_tp sg d
-  | TmDecl ({ recursive; typ; name; body; loc } as d) ->
+  | TmDecl ({ rec_flag; typ; name; body; loc } as d) ->
     Format.fprintf ppf "@[<v 2>Typechecking declaration for %s@," name;
     (* associate a fresh type variable to the definition, so that when we look
        up the type of the function for recursion, we end up unifying
@@ -475,10 +475,9 @@ let check_decl ppf (sg : Term.t Signature.t) : Term.t Decl.t -> Term.t Signature
       let open Type in
       let tmvars, x = TMVar.fresh TMVar.empty_sub "a" in
       let tp = TMVar (`inferred loc, x) in
-      if recursive then
-        (tmvars, Signature.declare_tm sg { d with typ = Some (mono tp) }, tp)
-      else
-        (tmvars, sg, tp)
+      match rec_flag with
+      | Rec -> (tmvars, Signature.declare_tm sg { d with typ = Some (mono tp) }, tp)
+      | NonRec -> (tmvars, sg, tp)
     in
     let sg' = match body with
       | None -> Result.ok @@ sg

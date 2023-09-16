@@ -627,7 +627,7 @@ let tm_decl : Decl.tm t =
   pure @@ Decl.({
       name;
       typ;
-      recursive = not (rec_flag = None);
+      rec_flag = if rec_flag = None then NonRec else Rec;
       body;
       loc = Loc.Span.join loc_def @@ Term.loc_of_tm body
     })

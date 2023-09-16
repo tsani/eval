@@ -221,7 +221,7 @@ module Decl = struct
   type 'a tm = {
     name : tm_name;
     typ : Type.sc option;
-    recursive : bool;
+    rec_flag : rec_flag;
     (* ^ whether the definition is recursive *)
     body : 'a option;
     (* ^ for recursive functions, the body is None until we finish evaluating the definition.

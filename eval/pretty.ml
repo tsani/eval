@@ -227,7 +227,7 @@ module Internal = struct
           name
           print_tvar_binders tvar_binders
           (pp_print_list ~pp_sep: pp_print_cut print_ctor) constructors
-      | Decl.(TmDecl { name; recursive }) ->
+      | Decl.(TmDecl { name; rec_flag }) ->
         begin match Signature.lookup_tm' name sg_t, Signature.lookup_tm' name sg_e with
         | Decl.({ typ = Some (_, typ); }, { body = Some body }) ->
           fprintf ppf "@[<hv 2>val %s : @[%a@] =@ @[%a@]@]"

@@ -32,6 +32,7 @@ type fn_desc = {
 
 module FnMap = Util.StringMap
 module CtorMap = Util.StringMap
+module RefMap = Util.StringMap
 
 type arity = int
 
@@ -55,8 +56,14 @@ module State = struct
 end
 
 module Ctx = struct
-    type t = { watermark : watermark; ctors : arity CtorMap.t }
+    type t = {
+        watermark : watermark;
+        ctors : arity CtorMap.t;
+        refs : arity RefMap.t;
+    }
 end
+
+type arity_lookup = [ `ref of string | `ctor of string ]
 
 module Cloco = struct
     (* Cloco monad. *)
@@ -103,16 +110,24 @@ module Cloco = struct
     let bumped_watermark (w : watermark) (m : 'a t) : 'a t =
         fun ctx s -> m { ctx with watermark = ctx.watermark + w } s
 
+    let with_ref (r, n : tm_name * arity) (m : 'a t) : 'a t =
+        fun ctx s -> m { ctx with refs = RefMap.add r n ctx.refs } s
+
     let rec with_ctors (kvs : (ctor_name * arity) list) (m : 'a t) : 'a t =
         let add_ctors ctors =
             List.fold_left (fun ctors (c, n) -> CtorMap.add c n ctors) ctors kvs
         in
         fun ctx s -> m { ctx with ctors = add_ctors ctx.ctors } s
 
-    let lookup_arity c : arity t = fun ctx s ->
-        (s, match CtorMap.find_opt c ctx.ctors with
-            | None -> Util.invariant "[close] all constructors have known arities"
-            | Some n -> n)
+    let lookup_arity (k : arity_lookup) : arity t = match k with
+        | `ctor c -> fun ctx s ->
+                (s, match CtorMap.find_opt c ctx.ctors with
+                    | None -> Util.invariant "[close] all constructors have known arities"
+                    | Some n -> n)
+        | `ref r -> fun ctx s ->
+                (s, match RefMap.find_opt r ctx.refs with
+                    | None -> Util.invariant "[close] all refs have known arities"
+                    | Some n -> n)
 
     let get_env_ren : RawER.t t = fun w s -> (s, s.theta)
 
@@ -182,20 +197,24 @@ let rec pattern : I.Term.pattern -> C.Term.pattern = function
     | I.Term.VariablePattern (_, _) -> C.Term.VariablePattern
     | I.Term.ConstPattern (_, c, ps) -> C.Term.ConstPattern (c, List.map pattern ps)
 
-(** Eta-expands a constructor to account for a partial constructor application.
-    expand_const c n tS requires:
-        - n is the arity of c
-        - |tS| <= n
+(** Eta-expands an application of a head to account for a partial constructor or ref application.
+    expand tH n tS requires:
+        - n is the arity of tH
     Then n - |tS| is the number of abstractions that are generated. *)
-let expand_const c n tS =
+let eta_expand tH n tS =
     let var i = I.Term.(App (fake_loc, Var (fake_loc, i), [])) in
     let fn t = I.Term.(Fun (fake_loc, (fake_loc, "!"), t)) in
+    (* idea: count down from n as we traverse tS
+       At each step that we still have terms in the spine, move them to tS'.
+       When we run out of terms in the spine but there is remaining arity, generate abstractions.
+     *)
     let rec go n tS tS' return = match n, tS with
     | 0, [] -> return tS'
     | n, [] -> go (n-1) [] (var (n-1) :: tS') (fun t -> fn (return t))
+    | 0, t :: tS -> go 0 tS (t :: tS') return
     | n, t :: tS -> go (n-1) tS (t :: tS') return
     in
-    go n tS [] (fun tS' -> I.Term.(App (fake_loc, Const (fake_loc, c), List.rev tS')))
+    go n tS [] (fun tS' -> I.Term.(App (fake_loc, tH, List.rev tS')))
 
 (* Example:
     expand_const c 3 [a]
@@ -223,28 +242,29 @@ let rec term : I.Term.t -> C.Term.t Cloco.t =
         bind (spine tS) @@ fun tS ->
         pure (C.Term.App (tH, tS))
     in
+    let arity_of_head = function
+        | I.Term.Var _ -> pure `unknown
+        | I.Term.Const (_, c) -> bind (lookup_arity @@ `ctor c) @@ fun n -> pure @@ `known n
+        | I.Term.Ref (_, r) -> bind (lookup_arity @@ `ref r) @@ fun n -> pure @@ `known n
+        | I.Term.Prim (_, p) -> pure @@ `known (Prim.arity p)
+    in
     function
     | I.Term.Fun _ as e -> func e
     | I.Term.Let (_, rec_flag, (_, x), e1, e2) ->
         bind (bump_of_rec_flag rec_flag @@ term e1) @@ fun e1' ->
         bind (bumped_watermark 1 @@ term e2) @@ fun e2' ->
         pure @@ C.Term.Let (rec_flag, e1', e2')
-
-    | I.Term.(App (_, Const (_, c), tS)) ->
-        (* Look up arity of c and expand it into a Fun if it isn't saturated. *)
-        bind (lookup_arity c) @@ fun n ->
-        begin match expand_const c n tS with
-        | I.Term.Fun _ as e -> func e
-        | I.Term.App (_, tH, tS) -> app tH tS
-        | _ -> Util.invariant "expand_const returns a Fun or an App"
-        end
-
-    | I.Term.App (_, tH, tS) -> app tH tS
-
     | I.Term.Match (_, e, cases) ->
         bind (term e) @@ fun e' ->
         bind (traverse case cases) @@ fun cases' ->
         pure (C.Term.Match (e', cases'))
+    | I.Term.App (_, tH, tS) ->
+        bind (arity_of_head tH) @@ function
+        | `unknown -> app tH tS
+        | `known n ->
+            match eta_expand tH n tS with
+            | I.Term.Fun _ as e -> func e
+            | I.Term.App (_, tH, tS) -> app tH tS
 
 and case : I.Term.case -> C.Term.case Cloco.t =
     let open Cloco in function
@@ -269,19 +289,15 @@ let tm_decl : I.Term.t I.Decl.tm -> C.Decl.tm Cloco.t =
             Cloco.pure @@ C.Decl.({
                 name;
                 body = C.Term.(App (Ref f, gen_spine n));
-                param_cnt = n;
+                arity = n;
             })
-            (* TODO There should probably be one more case, for a recursive function whose ER only
-               holds one item. That one item would have to be the recursive function itself, so we
-               can substitute the one env var for the Ref name and eliminate the MkClo operation
-               again. *)
         | body ->
             (* Otherwise, the definition is considered to not (statically) define a
                function. *)
             Cloco.pure @@ C.Decl.({
                 name;
                 body;
-                param_cnt = 0;
+                arity = 0;
             })
 
 let rec program : I.Decl.program -> C.Decl.program Cloco.t =
@@ -295,7 +311,7 @@ let rec program : I.Decl.program -> C.Decl.program Cloco.t =
                 (program ds)
         | I.Decl.TmDecl d' ->
             bind (tm_decl d') @@ fun d ->
-            bind (program ds) @@ fun ds ->
+            bind (Cloco.with_ref (d.name, d.arity) @@ program ds) @@ fun ds ->
             pure (d :: ds)
 
 (* fun x -> let a = f _0 in ---- clo [] 1 @@ let a = f 0b in

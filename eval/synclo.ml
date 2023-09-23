@@ -51,10 +51,10 @@ module Decl = struct
     type tm = {
         name : tm_name;
         body : Term.t;
-        param_cnt : int;
+        arity : int;
     }
 
-    let defines_function { param_cnt ; _ } = param_cnt > 0
+    let defines_function { arity; _ } = arity > 0
 
     type program = tm list
 end

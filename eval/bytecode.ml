@@ -13,7 +13,9 @@ type load_mode =
     [ `env (* loads from the environment *)
     | `param (* loads a function parameter *)
     | `value (* loads a well-known value *)
-    | `from_top (* duplicates a value some distance from the top of the stack *)
+    (* | `from_top (* duplicates a value some distance from the top of the stack *)
+       (* redundant with `param tbh *)
+     *)
     | `field (* loads a field from a construtor *)
     ]
 
@@ -82,4 +84,12 @@ module Program = struct
     type 'l builder = 'l t -> 'l t
 
     let cat (b1 : 'l builder) (b2 : 'l builder) : 'l builder = fun p -> b1 (b2 p)
+
+    let single (i : 'l Instruction.t) = fun p -> [i] @ p
+
+    let chunk (l : 'l Instruction.t list) = fun p -> l @ p
+
+    let empty : 'l builder = fun x -> x
+
+    let cats (bs : 'l builder list) : 'l builder = List.fold_right cat bs empty
 end

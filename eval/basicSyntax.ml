@@ -32,3 +32,10 @@ type literal =
   | CharLit of char
   | StringLit of string
   | BoolLit of bool
+
+module CtorMap = Util.StringMap
+module RefMap = Util.StringMap
+
+type arity = int
+
+type fn_kind = [ `closure | `pure ]

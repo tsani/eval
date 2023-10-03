@@ -54,7 +54,7 @@ end
 module Ctx = struct
     type t = {
         watermark : watermark;
-        ctors : arity CtorMap.t;
+        ctors : (index * arity) CtorMap.t;
         refs : (fn_kind * arity) RefMap.t;
     }
 
@@ -68,7 +68,7 @@ end
 module ProgramInfo = struct
     type t = {
         fns : fn_desc FnMap.t;
-        ctors : arity CtorMap.t;
+        ctors : (index * arity) CtorMap.t;
         refs : (fn_kind * arity) RefMap.t;
     }
 
@@ -135,12 +135,12 @@ module Cloco = struct
     let lookup_ctor_arity c : arity t = fun ctx s ->
         (s, match CtorMap.find_opt c ctx.ctors with
             | None -> Util.invariant "[close] all constructors have known arities"
-            | Some n -> n)
+            | Some (_, n) -> n)
 
-    let lookup_ref_arity f : (fn_kind * arity) t = fun ctx s ->
+    let lookup_ref_arity f : arity t = fun ctx s ->
         (s, match RefMap.find_opt f ctx.refs with
             | None -> Util.invariant "[close] all refs have known arities"
-            | Some n -> n)
+            | Some (_, n) -> n)
 
     let get_env_ren : RawER.t t = fun w s -> (s, s.theta)
 
@@ -258,7 +258,7 @@ let rec term : I.Term.t -> C.Term.t Cloco.t =
     let arity_of_head = function
         | I.Term.Var _ -> pure `unknown
         | I.Term.Const (_, c) -> bind (lookup_ctor_arity c) @@ fun n -> pure @@ `known n
-        | I.Term.Ref (_, r) -> bind (lookup_ref_arity r) @@ fun (_, n) -> pure @@ `known n
+        | I.Term.Ref (_, r) -> bind (lookup_ref_arity r) @@ fun n -> pure @@ `known n
         | I.Term.Prim (_, p) -> pure @@ `known (Prim.arity p)
     in
     function
@@ -349,7 +349,12 @@ let rec program : ProgramInfo.t ->  I.Decl.program -> ProgramInfo.t * C.Decl.pro
                 { pgmInfo with ctors =
                     constructors
                     |> List.map (fun I.Decl.({ name; fields }) -> (name, List.length fields))
-                    |> List.fold_left (fun ctors (c, n) -> CtorMap.add c n ctors) pgmInfo.ctors
+                    |> List.fold_left
+                        (fun (i, ctors) (c, n) -> (i + 1, CtorMap.add c (i, n) ctors))
+                        (0, pgmInfo.ctors)
+                    (* we number all the constructors in each type because the compiler will use
+                       these numbers to identify / represent the constructors later *)
+                    |> snd
                 }
             in
             program pgmInfo ds

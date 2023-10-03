@@ -12,8 +12,8 @@ end
 
 module Ctx = struct
     type t = {
-        refs : arity RefMap.t;
-        ctors : arity CtorMap.t;
+        refs : (fn_kind * arity) RefMap.t;
+        ctors : (index * arity) CtorMap.t;
     }
 end
 
@@ -32,8 +32,15 @@ module Compiler = struct
         let s = { s with label_counter = n + 1 } in
         (s, n)
 
-    let lookup_ctor_arity c : arity t = failwith "todo"
-    let lookup_ref_arity f : (fn_kind * arity) t = failwith "todo"
+    let lookup_ctor c : (index * arity) t = fun ctx s ->
+        match CtorMap.find_opt c ctx.ctors with
+        | None -> Util.invariant "[compile] every ctor has a known arity"
+        | Some x -> (s, x)
+
+    let lookup_ref f : (fn_kind * arity) t = fun ctx s ->
+        match RefMap.find_opt f ctx.refs with
+        | None -> Util.invariant "[compile] every ref has a known arity"
+        | Some x -> (s, x)
 
         (*
     (** Emits some bytecode instructions. *)
@@ -50,6 +57,10 @@ module Compiler = struct
         *)
 end
 
+let call_mode_of_fn_kind : fn_kind -> int -> call_mode = function
+    | `pure -> fun n -> `pure n
+    | `closure -> fun n -> `closure n
+
 let rec term (t : Term.t) : label Program.builder Compiler.t =
     let open Compiler in
     match t with
@@ -65,23 +76,27 @@ let rec term (t : Term.t) : label Program.builder Compiler.t =
               else Program.single @@ Instruction.Call `dynamic
             ]
         | Term.Ref f -> 
-            bind (lookup_ref_arity f) @@ fun (kind, n) ->
+            bind (lookup_ref f) @@ fun (kind, n) ->
             if List.length tS <> n then Util.invariant "[compile] ref call spine has n elements";
-            pure @@ Program.single @@ Instruction.Call (`closure n) (* TODO *)
+            pure @@ Program.single @@ Instruction.Call (call_mode_of_fn_kind kind n)
         | Term.Const c ->
-            bind (lookup_ctor_arity c) @@ fun n ->
-            pure @@ Program.single @@ Instruction.Const { ctor = c; field_count = n }
+            bind (lookup_ctor c) @@ fun (i, n) ->
+            pure @@ Program.single @@ Instruction.Const { ctor = i; field_count = n }
+        | Term.Prim p ->
+            pure @@ Program.single @@ Instruction.Prim p
         end
     | Term.Let (rec_flag, t1, t2) ->
         failwith "todo"
     | Term.Match (t, cases) -> failwith "todo"
-    | Term.MkClo (rho, n, f) -> failwith "todo"
+    | Term.MkClo (theta, n, f) -> failwith "todo"
 
-and spine : Term.spine -> label Program.builder Compiler.t = function
-    | [] -> Cloco.pure ()
-    | t :: tS -> bind (spine tS) @@ fun () -> term t
-
-    | Term.Prim p -> p
+and spine : Term.spine -> label Program.builder Compiler.t =
+    let open Compiler in function
+    | [] -> pure Program.empty
+    | t :: tS ->
+        bind (spine tS) @@ fun pS ->
+        bind (term t) @@ fun p ->
+        pure @@ Program.cat pS p
 
 and var : var -> label Program.builder = function
     | `bound i -> Program.single @@ Instruction.Load (`param, i)

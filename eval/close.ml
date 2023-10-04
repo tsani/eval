@@ -314,7 +314,7 @@ let tm_decl : I.Term.t I.Decl.tm -> (fn_kind * C.Decl.tm) Cloco.t =
                     C.Decl.({
                         name;
                         body = C.Term.MkClo (theta, n, f);
-                        arity = n;
+                        arity = 0;
                     })
                 )
 

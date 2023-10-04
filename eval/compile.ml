@@ -46,7 +46,7 @@ module Compiler = struct
     (** Emits some bytecode instructions. *)
     let output b = fun _ s ->
         let open State in
-        ({ s with program = Program.cat s.program (fun p -> b @ p)}, ())
+        ({ s with program = Text.cat s.program (fun p -> b @ p)}, ())
 
     (** Flushes the program construction buffer, emptying it and returning the list of
         instructions. *)
@@ -61,43 +61,61 @@ let call_mode_of_fn_kind : fn_kind -> int -> call_mode = function
     | `pure -> fun n -> `pure n
     | `closure -> fun n -> `closure n
 
-let rec term (t : Term.t) : label Program.builder Compiler.t =
+let rec term (t : Term.t) : label Text.builder Compiler.t =
     let open Compiler in
     match t with
     | Term.Lit lit -> failwith "todo"
     | Term.App (tH, tS) ->
         bind (spine tS) @@ fun pS ->
         begin match tH with 
-        | Term.Var v -> pure @@ Program.cats
+        | Term.Var v -> pure @@ Text.cats
             [ pS
             ; var v
             ; if tS = []
-              then Program.empty
-              else Program.single @@ Instruction.Call `dynamic
+              then Text.empty
+              else Text.single @@ Instruction.Call `dynamic
             ]
         | Term.Ref f -> 
             bind (lookup_ref f) @@ fun (kind, n) ->
             if List.length tS <> n then Util.invariant "[compile] ref call spine has n elements";
-            pure @@ Program.single @@ Instruction.Call (call_mode_of_fn_kind kind n)
+            pure @@ Text.single @@ Instruction.Call (call_mode_of_fn_kind kind n)
         | Term.Const c ->
             bind (lookup_ctor c) @@ fun (i, n) ->
-            pure @@ Program.single @@ Instruction.Const { ctor = i; field_count = n }
+            pure @@ Text.single @@ Instruction.Const { ctor = i; field_count = n }
         | Term.Prim p ->
-            pure @@ Program.single @@ Instruction.Prim p
+            pure @@ Text.single @@ Instruction.Prim p
         end
     | Term.Let (rec_flag, t1, t2) ->
         failwith "todo"
     | Term.Match (t, cases) -> failwith "todo"
     | Term.MkClo (theta, n, f) -> failwith "todo"
 
-and spine : Term.spine -> label Program.builder Compiler.t =
+and spine : Term.spine -> label Text.builder Compiler.t =
     let open Compiler in function
-    | [] -> pure Program.empty
+    | [] -> pure Text.empty
     | t :: tS ->
         bind (spine tS) @@ fun pS ->
         bind (term t) @@ fun p ->
-        pure @@ Program.cat pS p
+        pure @@ Text.cat pS p
 
-and var : var -> label Program.builder = function
-    | `bound i -> Program.single @@ Instruction.Load (`param, i)
-    | `env i -> Program.single @@ Instruction.Load (`env, i)
+and var : var -> label Text.builder = function
+    | `bound i -> Text.single @@ Instruction.Load (`param, i)
+    | `env i -> Text.single @@ Instruction.Load (`env, i)
+
+let decl (pgm : Bytecode.Program.t) : Closed.Decl.tm -> Bytecode.Program.t =
+    let Bytecode.Program.({ well_knowns; functions; top }) = pgm in
+    function
+    | Closed.Decl.({ name; body; arity }) ->
+        (* now this depends on... whether the term being defined is a *pure* function or not
+           only pure functions have nonzero arity; IOW things with zero arity need to happen right
+           away at program startup and are placed into `functions`. *)
+        if arity = 0 then
+            (* then the body of the declaration needs to happen right away, and its value is
+               stored in the well-known name `name` -- that is, this declaration becomes for a
+               so-called "well-known" value. *)
+            let p = term body in
+            Bytecode.Program.({ well_knowns = name :: well_knowns; functions; top
+        else
+
+let program (pgm : Closed.Decl.program) : Bytecode.program =
+    List.fold_left decl Bytecode.Program.empty pgm

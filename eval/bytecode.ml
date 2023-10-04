@@ -78,7 +78,7 @@ module Instruction = struct
         | Jump of jump_mode * 'l
 end
 
-module Program = struct
+module Text = struct
     type 'l t = 'l Instruction.t list
 
     type 'l builder = 'l t -> 'l t
@@ -92,4 +92,16 @@ module Program = struct
     let empty : 'l builder = fun x -> x
 
     let cats (bs : 'l builder list) : 'l builder = List.fold_right cat bs empty
+
+    let build b = b []
+end
+
+module Program = struct
+    type t = {
+        well_knowns : string list;
+        functions : (string * Text.t) list;
+        top : string Text.builder;
+    }
+
+    let empty = { well_knowns = []; functions = []; top = Text.empty }
 end

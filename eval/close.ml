@@ -72,7 +72,7 @@ module ProgramInfo = struct
         refs : (fn_kind * arity) RefMap.t;
     }
 
-    let initial = {
+    let empty = {
         fns = FnMap.empty;
         ctors = CtorMap.empty;
         refs = RefMap.empty;

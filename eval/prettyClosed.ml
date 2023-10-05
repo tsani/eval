@@ -7,13 +7,6 @@ open PrettyCommon
 
 let print_prim ppf p = Util.not_implemented ()
 
-let print_literal ppf = function
-    | BoolLit true -> fprintf ppf "true"
-    | BoolLit false -> fprintf ppf "false"
-    | CharLit c -> fprintf ppf "%c" c (* TODO handle escapes *)
-    | StringLit s -> fprintf ppf "\"%s\"" s (* TODO handle escapes *)
-    | IntLit n -> fprintf ppf "%d" n
-
 let print_var ppf = function
     | `bound i -> fprintf ppf "#b_%d" i
     | `env i -> fprintf ppf "#e_%d" i

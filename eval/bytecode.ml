@@ -6,17 +6,17 @@ type call_mode =
     ]
 
 (** Identifies the stack to push to. *)
-type stack_mode = [ `arg | `return ]
+type stack_mode = [ `param | `return ]
 
 (** Identifies which kind of value to load. *)
 type load_mode =
-    [ `env (* loads from the environment *)
-    | `param (* loads a function parameter *)
-    | `value (* loads a well-known value *)
+    [ `env of int (* loads from the environment *)
+    | `param of int (* loads a function parameter *)
+    | `well_known of string (* loads a well-known value *)
     (* | `from_top (* duplicates a value some distance from the top of the stack *)
        (* redundant with `param tbh *)
      *)
-    | `field (* loads a field from a construtor *)
+    | `field of int (* loads a field from a construtor *)
     ]
 
 type jump_mode =
@@ -69,7 +69,9 @@ module Instruction = struct
         | Push of stack_mode * Int32.t
 
         (* Loads an indirect value onto the top of the stack. *)
-        | Load of load_mode * int
+        | Load of load_mode
+
+        | Store of string
 
         (* Performs a primitive operation. Consumes from the stack whatever the arity of the prim is *)
         | Prim of BasicSyntax.Prim.t
@@ -99,7 +101,7 @@ end
 module Program = struct
     type t = {
         well_knowns : string list;
-        functions : (string * Text.t) list;
+        functions : (string * string Text.t) list;
         top : string Text.builder;
     }
 

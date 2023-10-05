@@ -117,12 +117,13 @@ let eval_prim s (prim, vS) : Value.t =
   | Not, [Lit (BoolLit b)] -> Lit (BoolLit (not b))
   | And, [Lit (BoolLit b1); Lit (BoolLit b2)] -> Lit (BoolLit (b1 && b2))
   | Or, [Lit (BoolLit b1); Lit (BoolLit b2)] -> Lit (BoolLit (b1 || b2))
-  | CharAt, [Lit (StringLit s); Lit (IntLit i)] -> Lit (CharLit (String.get s i))
-  | SubString, [Lit (StringLit s); Lit (IntLit i); Lit (IntLit n)] -> Lit (StringLit (String.sub s i n))
-  | Plus, [Lit (IntLit n1); Lit (IntLit n2)] -> Lit (IntLit (n1 + n2))
-  | Times, [Lit (IntLit n1); Lit (IntLit n2)] -> Lit (IntLit (n1 * n2))
-  | Neg, [Lit (IntLit n)] -> Lit (IntLit (-n))
-  | Div, [Lit (IntLit n1); Lit (IntLit (n2))] -> Lit (IntLit (n1 / n2))
+  | CharAt, [Lit (StringLit s); Lit (IntLit i)] -> Lit (CharLit (String.get s (Int32.to_int i)))
+  | SubString, [Lit (StringLit s); Lit (IntLit i); Lit (IntLit n)] ->
+      Lit (StringLit (String.sub s (Int32.to_int i) (Int32.to_int n)))
+  | Plus, [Lit (IntLit n1); Lit (IntLit n2)] -> Lit (IntLit (Int32.add n1 n2))
+  | Times, [Lit (IntLit n1); Lit (IntLit n2)] -> Lit (IntLit (Int32.mul n1 n2))
+  | Neg, [Lit (IntLit n)] -> Lit (IntLit (Int32.sub 0l n))
+  | Div, [Lit (IntLit n1); Lit (IntLit (n2))] -> Lit (IntLit (Int32.div n1 n2))
 
 let rec eval (s : State.t) (env : Env.t) : Term.t -> Value.t = function
   | Lit (_, lit) -> Value.Lit lit

@@ -3,19 +3,17 @@
 open BasicSyntax
 open Syntax.Closed
 open Bytecode
+open CompilerCommon
 
 type label = string
 
 module State = struct
     type t = { label_counter : int; }
+
+    let initial = { label_counter = 0 }
 end
 
-module Ctx = struct
-    type t = {
-        refs : (fn_kind * arity) RefMap.t;
-        ctors : (index * arity) CtorMap.t;
-    }
-end
+module Ctx = ProgramInfo
 
 module Compiler = struct
     type 'a t = Ctx.t -> State.t -> State.t * 'a
@@ -61,10 +59,14 @@ let call_mode_of_fn_kind : fn_kind -> int -> call_mode = function
     | `pure -> fun n -> `pure n
     | `closure -> fun n -> `closure n
 
+let literal = function
+    | IntLit n -> Text.single @@ Instruction.Push (`param, n)
+    | _ -> Util.not_implemented ()
+
 let rec term (t : Term.t) : label Text.builder Compiler.t =
     let open Compiler in
     match t with
-    | Term.Lit lit -> failwith "todo"
+    | Term.Lit lit -> pure @@ literal lit
     | Term.App (tH, tS) ->
         bind (spine tS) @@ fun pS ->
         begin match tH with 
@@ -99,23 +101,32 @@ and spine : Term.spine -> label Text.builder Compiler.t =
         pure @@ Text.cat pS p
 
 and var : var -> label Text.builder = function
-    | `bound i -> Text.single @@ Instruction.Load (`param, i)
-    | `env i -> Text.single @@ Instruction.Load (`env, i)
+    | `bound i -> Text.single @@ Instruction.Load (`param i)
+    | `env i -> Text.single @@ Instruction.Load (`env i)
 
-let decl (pgm : Bytecode.Program.t) : Closed.Decl.tm -> Bytecode.Program.t =
+let decl (ctx : Ctx.t) (pgm : Bytecode.Program.t) : Decl.tm -> Bytecode.Program.t =
     let Bytecode.Program.({ well_knowns; functions; top }) = pgm in
     function
-    | Closed.Decl.({ name; body; arity }) ->
+    | Decl.({ name; body; arity }) ->
         (* now this depends on... whether the term being defined is a *pure* function or not
-           only pure functions have nonzero arity; IOW things with zero arity need to happen right
-           away at program startup and are placed into `functions`. *)
+           Only pure functions have nonzero arity.
+           *)
+        let (s', p) = term body ctx State.initial in
         if arity = 0 then
             (* then the body of the declaration needs to happen right away, and its value is
                stored in the well-known name `name` -- that is, this declaration becomes for a
                so-called "well-known" value. *)
-            let p = term body in
-            Bytecode.Program.({ well_knowns = name :: well_knowns; functions; top
+            Bytecode.Program.({
+                well_knowns = name :: well_knowns;
+                functions;
+                top = Text.cat p (Text.single @@ Instruction.Store name)
+            })
         else
+            Bytecode.Program.({
+                well_knowns;
+                functions = (name, Text.build p) :: functions;
+                top;
+            })
 
-let program (pgm : Closed.Decl.program) : Bytecode.program =
-    List.fold_left decl Bytecode.Program.empty pgm
+let program (ctx : Ctx.t) (pgm : Decl.program) : Bytecode.Program.t =
+    List.fold_left (decl ctx) Bytecode.Program.empty pgm

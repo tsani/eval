@@ -12,6 +12,7 @@
 *)
 
 open BasicSyntax
+open CompilerCommon
 open Syntax
 
 module I = Syntax.Internal
@@ -53,29 +54,9 @@ end
 
 module Ctx = struct
     type t = {
+        closure_prefix : string;
         watermark : watermark;
-        ctors : (index * arity) CtorMap.t;
-        refs : (fn_kind * arity) RefMap.t;
-    }
-
-    let initial = {
-        watermark = 0;
-        ctors = CtorMap.empty;
-        refs = RefMap.empty;
-    }
-end
-
-module ProgramInfo = struct
-    type t = {
-        fns : fn_desc FnMap.t;
-        ctors : (index * arity) CtorMap.t;
-        refs : (fn_kind * arity) RefMap.t;
-    }
-
-    let empty = {
-        fns = FnMap.empty;
-        ctors = CtorMap.empty;
-        refs = RefMap.empty;
+        info : ProgramInfo.t
     }
 end
 
@@ -112,8 +93,8 @@ module Cloco = struct
         pure (y :: ys)
 
     (** Adds a new function to the current mapping, generating a new name for it. *)
-    let add_function (d : fn_desc) : tm_name t = fun _ s ->
-        let name = "%closure_" ^ string_of_int s.fn_name_counter in
+    let add_function (d : fn_desc) : tm_name t = fun ctx s ->
+        let name = ctx.closure_prefix ^ "_closure_" ^ string_of_int s.fn_name_counter in
         ( { s with
               fn_name_counter = s.fn_name_counter + 1;
               fns = FnMap.add name d s.fns;
@@ -133,12 +114,12 @@ module Cloco = struct
         fun ctx s -> m { ctx with watermark = ctx.watermark + w } s
 
     let lookup_ctor_arity c : arity t = fun ctx s ->
-        (s, match CtorMap.find_opt c ctx.ctors with
+        (s, match CtorMap.find_opt c ctx.info.ctors with
             | None -> Util.invariant "[close] all constructors have known arities"
             | Some (_, n) -> n)
 
     let lookup_ref_arity f : arity t = fun ctx s ->
-        (s, match RefMap.find_opt f ctx.refs with
+        (s, match RefMap.find_opt f ctx.info.refs with
             | None -> Util.invariant "[close] all refs have known arities"
             | Some (_, n) -> n)
 
@@ -262,6 +243,7 @@ let rec term : I.Term.t -> C.Term.t Cloco.t =
         | I.Term.Prim (_, p) -> pure @@ `known (Prim.arity p)
     in
     function
+    | I.Term.Lit (_, lit) -> pure @@ C.Term.Lit lit
     | I.Term.Fun _ as e -> func e
     | I.Term.Let (_, rec_flag, (_, x), e1, e2) ->
         bind (bump_of_rec_flag rec_flag @@ term e1) @@ fun e1' ->
@@ -362,11 +344,11 @@ let rec program : ProgramInfo.t ->  I.Decl.program -> ProgramInfo.t * C.Decl.pro
         | I.Decl.TmDecl d' ->
             let (final_state, (fn_kind, d)) =
                 tm_decl d' Ctx.({
-                    initial with
+                    watermark = 0;
+                    closure_prefix = d'.I.Decl.name;
                     (* closure conversion of a term needs to know the arity of each ref and
                        constructor *)
-                    ctors = pgmInfo.ProgramInfo.ctors;
-                    refs = pgmInfo.ProgramInfo.refs;
+                    info = pgmInfo;
                 }) State.initial
             in
             (* it emits a list of functions (closure bodies) to hoist to the top level

@@ -21,6 +21,19 @@ module Prim = struct
     | Not | Neg -> 1
     | Eq | Lt | And | Or | CharAt | Plus | Times | Div -> 2
     | SubString -> 3
+
+  let to_string = function
+    | Eq -> "eq"
+    | Not -> "not"
+    | Neg -> "neg"
+    | Lt -> "lt"
+    | And -> "and"
+    | Or -> "or"
+    | CharAt -> "char_at"
+    | SubString -> "substring"
+    | Plus -> "plus"
+    | Times -> "times"
+    | Div -> "div"
 end
 
 (** Built-in types. *)
@@ -28,14 +41,7 @@ type builtin_tp = Int | Char | String | Bool
 
 (* Literals L ::= 1 | 2 | ... | 'c' | ... | true | false | "string" | ... *)
 type literal =
-  | IntLit of int
+  | IntLit of Int32.t
   | CharLit of char
   | StringLit of string
   | BoolLit of bool
-
-module CtorMap = Util.StringMap
-module RefMap = Util.StringMap
-
-type arity = int
-
-type fn_kind = [ `closure | `pure ]

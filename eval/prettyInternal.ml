@@ -48,13 +48,6 @@ let rec print_ctx (ppf : formatter) (ctx : Ctx.t) : unit =
     end t
   end ppf @@ Ctx.enumerate ctx
 
-let print_literal ppf = function
-  | BoolLit true -> fprintf ppf "true"
-  | BoolLit false -> fprintf ppf "false"
-  | CharLit c -> fprintf ppf "%c" c (* TODO handle escapes *)
-  | StringLit s -> fprintf ppf "\"%s\"" s (* TODO handle escapes *)
-  | IntLit n -> fprintf ppf "%d" n
-
 let rec print_tm lvl scope (ppf : formatter) : Term.t -> unit = function
   | Lit (_, lit) -> fprintf ppf "%a" print_literal lit
   | Fun (_, (_, x), e) ->

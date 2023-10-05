@@ -317,10 +317,14 @@ let lchar = label "lowercase character" @@ satisfy (both is_letter is_lowercase)
 let uchar = label "uppercase character" @@ satisfy (both is_letter is_uppercase)
 let alphanumeric = label "alphanumeric character" @@ satisfy (any [is_letter; is_digit; is_symbol; fun x -> x = '_'])
 let whitespace = label "whitespace character" @@ satisfy is_whitespace
-let digit = label "digit character" @@ satisfy is_digit |> map (fun x -> String.make 1 x |> int_of_string)
+let digit =
+  label "digit character" @@
+  satisfy is_digit
+  |> map (fun x -> String.make 1 x |> Int32.of_string)
 let raw_number =
+  let f d (acc, pow10) = (Int32.add acc @@ Int32.mul d pow10, Int32.mul pow10 10l) in
   some digit |>
-  map (fun ds -> List.fold_right (fun d (acc, pow10) -> (acc + d * pow10, pow10 * 10)) ds (0, 1)) |>
+  map (fun ds -> List.fold_right f ds (0l, 1l)) |>
   map fst
 let symbol = satisfy is_symbol
 

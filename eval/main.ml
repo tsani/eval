@@ -1,4 +1,4 @@
-module P = Pretty.Internal
+module P = Pretty
 
 open Format
 
@@ -34,9 +34,14 @@ let main () =
                         Eval.RuntimeError.print e
                 | Result.Ok Eval.State.({ sg = sg_e }) ->
                     fprintf ppf "Evaluation finished.@.%a@."
-                        P.print_evaluated_program (sg_t, sg_e, program);
-                    let (pgmInfo, closed_program) = Close.(program ProgramInfo.empty program) in
-                    closed_program
-                    |> List.iter Compile.(fun Decl.({ name; body; arity }) ->
+                        P.Internal.print_evaluated_program (sg_t, sg_e, program);
+                    let (pgmInfo, closed_program) =
+                        Close.program CompilerCommon.ProgramInfo.empty program
+                    in
+                    fprintf ppf "Closure conversion succeeded.@.";
+                    let pgm = Compile.program pgmInfo closed_program in
+                    fprintf ppf "Compilation succeeded.@.";
+                    fprintf ppf "@[<v>%a@]@." P.Bytecode.print_program pgm
+
 
 let _ = main ()

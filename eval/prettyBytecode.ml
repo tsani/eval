@@ -1,6 +1,8 @@
 open Format
 open Bytecode
 
+open PrettyCommon
+
 let print_call_mode ppf = function
     | `pure n -> fprintf ppf "pure %d" n
     | `closure n -> fprintf ppf "clo %d" n
@@ -8,14 +10,14 @@ let print_call_mode ppf = function
     | `dynamic -> fprintf ppf "dyn"
 
 let print_stack_mode ppf = function
-    | `arg -> fprintf ppf "val"
+    | `param -> fprintf ppf "param"
     | `return -> fprintf ppf "ret"
 
 let print_load_mode ppf = function
-    | `env -> fprintf ppf "env"
-    | `param -> fprintf ppf "val"
-    | `value -> fprintf ppf "well-known"
-    | `field -> fprintf ppf "field"
+    | `env n -> fprintf ppf "env %d" n
+    | `param n -> fprintf ppf "val %d" n
+    | `field n -> fprintf ppf "field %d" n
+    | `well_known s -> fprintf ppf "well-known %s" s
 
 let print_jump_mode ppf = function
     | `unconditional -> ()
@@ -43,9 +45,23 @@ let print_instruction ppf (i : string Instruction.t) = match i with
         fprintf ppf "pop %a" print_stack_mode mode
     | Push (mode, n) ->
         fprintf ppf "push %a %ld" print_stack_mode mode n
-    | Load (mode, i) ->
-        fprintf ppf "load %a %d" print_load_mode mode i
+    | Load (mode) ->
+        fprintf ppf "load %a" print_load_mode mode
+    | Store wk ->
+        fprintf ppf "store %s" wk
     | Prim p ->
-        fprintf ppf "prim %d (wtf)" (Obj.magic p)
+        fprintf ppf "prim %a" print_prim_name p
     | Jump (mode, l) ->
         fprintf ppf "jump %a %s" print_jump_mode mode l
+
+let print_text ppf (p : string Text.t) =
+    fprintf ppf "@[<v>%a@]" (pp_print_list ~pp_sep: pp_print_cut print_instruction) p
+
+let print_program ppf Program.({ well_knowns; functions; top }) =
+    fprintf ppf "@[<v 2>well_known:@,@[<v>%a@]@]@,"
+        (pp_print_list ~pp_sep: (fun ppf _ -> fprintf ppf ", ") pp_print_string) well_knowns;
+    fprintf ppf "@[<v 2>functions:@,@[<v>%a@]@]@,"
+        (pp_print_list ~pp_sep: pp_print_cut (fun ppf (name, body) ->
+            fprintf ppf "@[@[<v 2>%s:@,%a@]@,@]" name print_text body)) functions;
+    fprintf ppf "@[<v 2>entrypoint:@,@[<v>%a@]@]"
+        print_text (Text.build top) (* XXX *)

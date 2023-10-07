@@ -18,7 +18,6 @@ EBCI uses a fixed number of special registers. It does not have any general-purp
   boundary. This is used for calculating the address of function arguments.
 - `SP` the stack pointer is the offset into the argument stack of the next unused item.
     (Seen differently, it is the current size of the stack.)
-- `EP` the environment pointer stores the address of the current environment
 
 # Memory segments
 
@@ -37,7 +36,7 @@ A bytecode program for the EVM consists of multiple memory segments.
 - Each item on the argument stack is called a _value_. Each value is a 64 bit integer.
 - There are two kinds of values, and these are tagged by the LSB of the integer:
     - An unboxed integer ends in 1, so it's really only 63 bits wide.
-    - An addresses ends in 0.
+    - A heap address ends in 0.
 
 # (Heap) objects
 
@@ -55,7 +54,7 @@ There are a few kinds of objects:
             - the count of required function parameters
             - a code pointer
         - the environment variables' values come next
-    - PAP - partial applications:
+    - PAP - partial applications: (It's not clear how much we need these vs just using closures)
         - a header that contains:
             - a tag identifying this as a partial application
             - the count `N` of held argumnets
@@ -68,20 +67,22 @@ There are a few kinds of objects:
 
 # The code segment
 
-In the example code, there is a pure function that makes up the closure. The pure function's code
-would look like this.
+The code segment of a program contains all the bytecode instructions.
+It is divided into two sections:
 
-```evalbc
-load_e 0 ; load captured env var 0 (x)
-load_p 0 ; load parameter var 0 (y)
-add
-ret      ; pops the env and return addresses from the call stack, sets PC to return address
-```
+- function definitions
+    - these correspond to definitions in the program of nonzero arity, e.g.
+        `def foo = fun x -> x + 2` does not need to compute anything upfront, so we store the code
+        for `x+2` into a subsection named `foo`.
+- the program entrypoint
+    - the entrypoint code contains all the code that runs "while the module is being loaded"
+    - these correspond to definitions in the program "of arity 0", e.g.
+        `def four = 2 + 2` needs to compute 2+2 and store it in a well-known location named `four`.
 
 This code is stored in the code segment.
 
 All the code of each function is stored sequentially in the code segment.
-Pure functions are referred to by addresses in the code segment.
+Functions (either pure ones or closure _bodies_) are referred to by addresses in the code segment.
 
 # The heap
 
@@ -91,12 +92,12 @@ their environments.
 The example program earlier forms a closure, so its code would look like.
 
 ```evalbc
-push_i 5
-push_i $foo        ; load the address of the function code, which is statically known
-mkclo 1            ; construct a closure capturing one value into the environment
-                   ; this consumed the function address and the one integer on the stack
-                   ; now the stack holds just the address of the closure on the heap
-store_v $clo_foo   ; store_v twice into the same label would cause a crash
+push param int 5
+push param addr $foo      ; load the address of the function code, which is statically known
+mkclo 1                   ; construct a closure capturing one value into the environment
+                          ; this consumes the function address and the one value on the stack
+                          ; now the stack holds just the address of the closure on the heap
+store well-known $clo_foo ; move the closure heap address into the well-known location
 ```
 
 Since the example program was a top level definition, it isn't anonymous! Other programs will want
@@ -107,6 +108,64 @@ the actual bytecode this symbol is represented as an integer encoded into the `s
 instruction.
 
 # Calling a known closure
+
+Recall the example `def foo = let x = 5 in fun y -> x + y`.
+
+This allocates a closure and stores the address of the closure in the well-known location `foo`.
+The _body_ of the closure `x + y` will generate a function `foo_closure_1`, that is the body of
+the closure. Closure bodies are special, in that user code can never call them directly.
+Jumps into them happen from within the interpreter, once the environment has been loaded.
+Likewise, closure bodies use a special return instruction that tells the interpreter to clean up
+the environment.
+
+Now later on, there is an application in the program that looks like `foo 2`. This is what we mean
+by "calling a known closure".
+
+This needs to be translated into:
+
+```evalbc
+push param int 2 (* the literal 2 *)
+load well-known foo (* load the closure address from the well-known location `foo` *)
+call closure 1 (* invoke the closure with 1 argument *)
+```
+
+The "call closure" instruction deferences the closure address to fetch the _environment address_
+and the _closure body address_. The environment is copied into the _call stack_ (since we can't use
+the argument stack for this) and the closure body address is jumped to.
+Since the closure body knows how many environment variables there were, it contains the necessary
+code to remove that many entries from the call stack before it returns.
+In particular, it will use the `ret closure N K` instruction, where `N` is the size of the
+environment and `K` is the number of function parameters. The interpreter will:
+- pop `N` many values from the call stack, thus cleaning up the environment
+- moves the top of the param stack (the return value of the function) onto the call stack
+- pop `K` many values from the param stack, thus cleaning up the parameters.
+- move the top of the call stack (the function return value) onto the param stack
+    (as expected by the caller)
+- pop the return address off of the call stack and jump there
+
+## Remark on degenerate closures and unhoisting
+
+Closure conversion will turn _every_ (sequence of) `Fun` abstraction(s) into an MkClo node, so
+`def foo = fun x -> x + 2` will actually be turned into an MkClo node, and the code for `x+2`
+hoisted to a definition for `foo_closure_1`. However, this closure does not capture _any_
+environment variables. We call it a _degenerate closure._ Degenerate closures associated to
+top-level definitions get _unhoisted_ to define a _pure function_ rather than a _closure body_.
+(Static) calls to pure functions are optimized since we don't need to load/destroy an environment.
+(We avoid one indirection.)
+
+```evalbc
+load_e 0 ; load captured env var 0 (x)
+load_p 0 ; load parameter var 0 (y)
+add
+ret      ; pops the env and return addresses from the call stack, sets PC to return address
+```
+
+This gets complicated with closures. Recall the example
+
+
+```eval
+def foo = let x = 5 in fun y -> x + y
+```
 
 ## Making an exact call
 

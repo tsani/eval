@@ -7,7 +7,7 @@ let rec insert x = function
   | y :: ys -> y :: insert x ys
 
 let rec insert_index x = function
-  | [] -> ([x], 1)
+  | [] -> ([x], 0)
   | y :: ys when x = y -> (y :: ys, 0)
   | y :: ys -> let ys, i = insert_index x ys in (y :: ys, i + 1)
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-ocamlopt -g -o eval oSet.mli oSet.ml result.ml util.ml loc.ml \
+ocamlopt -g -o eval debug.ml oSet.mli oSet.ml result.ml util.ml loc.ml \
     basicSyntax.ml scope.ml synint.ml synext.ml synclo.ml syntax.ml runtimeInfo.ml bytecode.ml \
     prettyCommon.ml prettyBytecode.ml prettyInternal.ml prettyClosed.ml pretty.ml \
     compilerCommon.ml compile.ml close.ml \

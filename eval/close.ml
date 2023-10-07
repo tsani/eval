@@ -224,15 +224,6 @@ let eta_expand tH n tS =
     in
     go n tS [] (fun tS' -> I.Term.(App (fake_loc, tH, List.rev tS')))
 
-(* Example:
-    expand_const c 3 [a]
-    -> go 3 [a] [] done
-    -> go 2 [] [a] done
-    -> go 1 [] [v 1; a] (fn . done)
-    -> go 0 [] [v 0; v 1; a] (fn . fn . done)
-    -> (fn . fn . done) [v 0; v 1; a]
-    -> `Fun ! ! -> c [a; v 1 ; v 0]` as required! *)
-
 (* Closure-converts a term. *)
 let rec term : I.Term.t -> C.Term.t Cloco.t =
     let open Cloco in

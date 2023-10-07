@@ -1,5 +1,8 @@
+open RuntimeInfo
+
 type call_mode =
-    [ `pure of int
+    (* In each, the int is the count of arguments *)
+    [ `func of int
     | `closure of int
     | `pap of int
     | `dynamic
@@ -17,6 +20,12 @@ type load_mode =
        (* redundant with `param tbh *)
      *)
     | `field of int (* loads a field from a construtor *)
+    | `func of address ref
+      (* when we are writing the instruction to load the statically-known address of a function, we
+         actually don't know what that address is yet. That will depend on the precise positions of
+         the instructions in the output byte stream.
+         We use this ref (initialized with zero) to later update when we do figure out what the
+         address is. *)
     ]
 
 type jump_mode =
@@ -29,14 +38,15 @@ type jump_mode =
 type return_mode =
     (* returning from a closure has a little more ceremony than returning from a pure function *)
     [ `closure
-    | `direct
+    | `func
     ]
 
 type offset = int
 
 module Instruction = struct
     type 'l t =
-        (* Enter a function. *)
+        (* Enter a function.
+           The shape of the stack, from top to bottom, is <function>, <arg 1>, <arg 2>, etc. *)
         | Call of call_mode
 
         (* Exit a function. *)

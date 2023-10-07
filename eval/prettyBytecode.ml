@@ -4,7 +4,7 @@ open Bytecode
 open PrettyCommon
 
 let print_call_mode ppf = function
-    | `pure n -> fprintf ppf "pure %d" n
+    | `func n -> fprintf ppf "func %d" n
     | `closure n -> fprintf ppf "clo %d" n
     | `pap n -> fprintf ppf "pap %d" n
     | `dynamic -> fprintf ppf "dyn"
@@ -18,6 +18,7 @@ let print_load_mode ppf = function
     | `param n -> fprintf ppf "val %d" n
     | `field n -> fprintf ppf "field %d" n
     | `well_known s -> fprintf ppf "well-known %s" s
+    | `func l -> fprintf ppf "func %Ld" (!l)
 
 let print_jump_mode ppf = function
     | `unconditional -> ()
@@ -26,7 +27,7 @@ let print_jump_mode ppf = function
 
 let print_ret_mode ppf = function
     | `closure -> fprintf ppf "clo"
-    | `direct -> fprintf ppf "pure"
+    | `func -> fprintf ppf "func"
 
 let print_instruction ppf (i : string Instruction.t) = match i with
     | Call mode ->
@@ -39,7 +40,7 @@ let print_instruction ppf (i : string Instruction.t) = match i with
         fprintf ppf "mkpap %d %d" held_count missing_count
     | Const { ctor; field_count } ->
         fprintf ppf "const %d %d" ctor field_count
-    | Match { ctor } -> failwith "todo"
+    | Match { ctor } ->
         fprintf ppf "match %d" ctor
     | Pop mode ->
         fprintf ppf "pop %a" print_stack_mode mode

@@ -4,6 +4,7 @@ open BasicSyntax
 open Syntax.Closed
 open Bytecode
 open CompilerCommon
+open RuntimeInfo
 
 type label = string
 
@@ -23,6 +24,9 @@ module Compiler = struct
     (** Sequences compiler actions. *)
     let bind (m : 'a t) (k : 'a -> 'b t) : 'b t = fun ctx s -> let (s', x) = m ctx s in k x ctx s'
 
+    let map (f : 'a -> 'b) (m : 'a t) : 'b t = fun ctx s ->
+        let (s', x) = m ctx s in (s', f x)
+
     (** Synthesizes a fresh label never before seen in the program. *)
     let new_label = fun _ s ->
         let open State in
@@ -35,7 +39,7 @@ module Compiler = struct
         | None -> Util.invariant "[compile] every ctor has a known arity"
         | Some x -> (s, x)
 
-    let lookup_ref f : (fn_kind * arity) t = fun ctx s ->
+    let lookup_ref f : ProgramInfo.ref_spec t = fun ctx s ->
         match RefMap.find_opt f ctx.refs with
         | None -> Util.invariant "[compile] every ref has a known arity"
         | Some x -> (s, x)
@@ -55,9 +59,11 @@ module Compiler = struct
         *)
 end
 
-let call_mode_of_fn_kind : fn_kind -> int -> call_mode = function
-    | `pure -> fun n -> `pure n
-    | `closure -> fun n -> `closure n
+let call_mode_of_ref (r : ProgramInfo.ref_spec) : call_mode =
+    match r.kind with
+    | `func -> `func r.arity
+    | `well_known -> `closure r.arity
+    | `closure_body -> Util.invariant "[compile] calls to closure bodies are not possible"
 
 let literal = function
     | IntLit n -> Text.single @@ Instruction.Push (`param, n)
@@ -69,18 +75,20 @@ let rec term (t : Term.t) : label Text.builder Compiler.t =
     | Term.Lit lit -> pure @@ literal lit
     | Term.App (tH, tS) ->
         bind (spine tS) @@ fun pS ->
-        begin match tH with 
+        begin map (Text.cat pS) @@ match tH with
         | Term.Var v -> pure @@ Text.cats
-            [ pS
-            ; var v
+            [ var v
             ; if tS = []
               then Text.empty
               else Text.single @@ Instruction.Call `dynamic
             ]
         | Term.Ref f -> 
-            bind (lookup_ref f) @@ fun (kind, n) ->
-            if List.length tS <> n then Util.invariant "[compile] ref call spine has n elements";
-            pure @@ Text.single @@ Instruction.Call (call_mode_of_fn_kind kind n)
+            bind (lookup_ref f) @@ fun ref_spec ->
+            if List.length tS <> ref_spec.arity then
+                Util.invariant "[compile] ref call spine has n elements";
+            pure @@ Text.cat
+                (Text.single @@ Instruction.Load (`func ref_spec.address))
+                (Text.single @@ Instruction.Call (call_mode_of_ref ref_spec))
         | Term.Const c ->
             bind (lookup_ctor c) @@ fun (i, n) ->
             pure @@ Text.single @@ Instruction.Const { ctor = i; field_count = n }
@@ -104,10 +112,20 @@ and var : var -> label Text.builder = function
     | `bound i -> Text.single @@ Instruction.Load (`param i)
     | `env i -> Text.single @@ Instruction.Load (`env i)
 
+let return_mode_of_ref r = match r.ProgramInfo.kind with
+    | `well_known -> Util.invariant "[compile] well-known values do not define functions"
+    | `func -> `func
+    | `closure_body -> `closure
+
 let decl (ctx : Ctx.t) (pgm : Bytecode.Program.t) : Decl.tm -> Bytecode.Program.t =
     let Bytecode.Program.({ well_knowns; functions; top }) = pgm in
     function
     | Decl.({ name; body; arity }) ->
+        let ref_spec = match RefMap.find_opt name ctx.refs with
+            | Some x -> x
+            | None -> Util.invariant "[compile] ProgramInfo.t contains all functions"
+        in
+        if ref_spec.arity <> arity then Util.invariant "[compile] arity mismatch";
         (* now this depends on... whether the term being defined is a *pure* function or not
            Only pure functions have nonzero arity.
            *)
@@ -124,7 +142,12 @@ let decl (ctx : Ctx.t) (pgm : Bytecode.Program.t) : Decl.tm -> Bytecode.Program.
         else
             Bytecode.Program.({
                 well_knowns;
-                functions = (name, Text.build p) :: functions;
+                functions =
+                    ( name
+                    , Text.(
+                          build @@ cat p (single @@ Instruction.Ret (return_mode_of_ref ref_spec))
+                      )
+                    ) :: functions;
                 top;
             })
 

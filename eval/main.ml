@@ -26,6 +26,7 @@ let main () =
             match Typecheck.check_program epf Syntax.Internal.Signature.empty program with
             | Result.Error report -> Typecheck.Error.print_report epf report;
             | Result.Ok sg_t ->
+                fprintf epf "@.";
                 fprintf ppf "Typechecking succeeded.@.";
                 match Eval.(program (State.empty epf)) program with
                 | Result.Error (loc, e) ->
@@ -33,7 +34,8 @@ let main () =
                         Loc.print loc.Loc.Span.start
                         Eval.RuntimeError.print e
                 | Result.Ok Eval.State.({ sg = sg_e }) ->
-                    fprintf ppf "Evaluation finished.@.%a@."
+                    fprintf epf "@.";
+                    fprintf ppf "Evaluation succeeded.@.%a@."
                         P.Internal.print_evaluated_program (sg_t, sg_e, program);
                     let (pgmInfo, closed_program) =
                         Close.program CompilerCommon.ProgramInfo.empty program

@@ -41,6 +41,7 @@ let main () =
                         Close.program CompilerCommon.ProgramInfo.empty program
                     in
                     fprintf ppf "Closure conversion succeeded.@.";
+                    fprintf ppf "  @[<v>%a@]@." P.Closed.print_program closed_program;
                     let pgm = Compile.program pgmInfo closed_program in
                     fprintf ppf "Compilation succeeded.@.";
                     fprintf ppf "@[<v>%a@]@." P.Bytecode.print_program pgm

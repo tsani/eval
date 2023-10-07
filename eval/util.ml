@@ -17,3 +17,7 @@ exception NotImplemented
 let invariant msg = raise @@ Invariant msg
 let not_implemented () = raise NotImplemented
 
+(** Adds the index to each element of the list, from the given starting index. *)
+let rec enumerate i = function
+    | [] -> []
+    | x :: xs -> (i, x) :: enumerate (i+1) xs

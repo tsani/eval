@@ -5,7 +5,7 @@ open Term
 
 open PrettyCommon
 
-let print_prim ppf p = Util.not_implemented ()
+let print_prim ppf p = fprintf ppf "%s" (Prim.to_string p)
 
 let print_var ppf = function
     | `bound i -> fprintf ppf "#b_%d" i
@@ -18,7 +18,7 @@ let print_head ppf = function
     | Prim p -> print_prim ppf p
 
 let rec print_tm lvl ppf = function
-    | MkClo (theta, n, f) -> fprintf ppf "mkclo(%a, %d, %s)" (print_env_ren ppf) theta n f
+    | MkClo (theta, n, f) -> fprintf ppf "mkclo(%a, %d, %s)" print_env_ren theta n f
     | Lit l -> print_literal ppf l
     | App (tH, tS) -> print_app lvl ppf (tH, tS)
     | Let (rec_flag, e1, e2) ->
@@ -61,7 +61,9 @@ and print_pattern lvl ppf : pattern -> unit = function
 and print_pat_spine lvl ppf : pattern list -> unit =
     pp_print_list ~pp_sep: pp_print_space (print_pattern lvl) ppf
 
-and print_env_ren ppf theta = Util.not_implemented ()
+and print_env_ren ppf (theta : EnvRen.t) = fprintf ppf "[@[<hv>%a@]]"
+    (pp_print_list ~pp_sep: comma_space (fun ppf (i, x) -> fprintf ppf "%a/%d" print_var x i))
+    (Util.enumerate 0 theta)
 
 and print_app lvl ppf : head * spine -> unit = function
     (* since Prims are usually operators, we handle printing them specially *)
@@ -118,4 +120,8 @@ and print_prim_app lvl ppf =
       print_simple_app lvl ppf ((fun ppf _ -> fprintf ppf "substring"), ts)
     | _ -> Util.invariant "all internal syntax primops have correct number of arguments"
 
-
+let print_program =
+    pp_print_list ~pp_sep: (fun _ _ -> ()) begin
+        fun ppf Decl.({ name; body; arity }) ->
+            fprintf ppf "@[<hv 2>def %s %d = @,@[<hv 2>%a@]@]@," name arity (print_tm 0) body
+    end

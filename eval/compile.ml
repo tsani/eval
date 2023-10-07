@@ -66,8 +66,20 @@ let call_mode_of_ref (r : ProgramInfo.ref_spec) : call_mode =
     | `closure_body -> Util.invariant "[compile] calls to closure bodies are not possible"
 
 let literal = function
-    | IntLit n -> Text.single @@ Instruction.Push (`param, n)
+    | IntLit n -> Text.single @@ Instruction.Push (`param, `integer n)
     | _ -> Util.not_implemented ()
+
+let var : var -> label Text.builder = function
+    | `bound i -> Text.single @@ Instruction.Load (`param i)
+    | `env i -> Text.single @@ Instruction.Load (`env i)
+
+let rec env_ren = let open Compiler in function
+    | [] -> pure @@ Text.empty
+    | v :: vs ->
+        (* this happens 'backwards' because we need to arrange that the value to be stored in
+            position 0 of the environment is at the top of the stack, but the variable whose value
+            should go there is at index 0 in the environment renaming. *)
+        bind (env_ren vs) @@ fun pS -> pure @@ Text.cat pS (var v)
 
 let rec term (t : Term.t) : label Text.builder Compiler.t =
     let open Compiler in
@@ -87,7 +99,7 @@ let rec term (t : Term.t) : label Text.builder Compiler.t =
             if List.length tS <> ref_spec.arity then
                 Util.invariant "[compile] ref call spine has n elements";
             pure @@ Text.cat
-                (Text.single @@ Instruction.Load (`func ref_spec.address))
+                (Text.single @@ Instruction.Push (`param, `address ref_spec.address))
                 (Text.single @@ Instruction.Call (call_mode_of_ref ref_spec))
         | Term.Const c ->
             bind (lookup_ctor c) @@ fun (i, n) ->
@@ -95,10 +107,24 @@ let rec term (t : Term.t) : label Text.builder Compiler.t =
         | Term.Prim p ->
             pure @@ Text.single @@ Instruction.Prim p
         end
-    | Term.Let (rec_flag, t1, t2) ->
-        failwith "todo"
-    | Term.Match (t, cases) -> failwith "todo"
-    | Term.MkClo (theta, n, f) -> failwith "todo"
+    | Term.Let (Rec, t1, t2) -> failwith "recursive let bindings not implemented"
+    | Term.Let (NonRec, t1, t2) ->
+        bind (term t1) @@ fun p1 ->
+        bind (term t2) @@ fun p2 ->
+            pure @@ Text.cats [ p1; p2;
+                Text.single @@ Instruction.Pop (`param, 1)
+                (* drop the value of t1 from the stack, since function exit only knows to clean up
+                   params *)
+            ]
+    | Term.Match (t, cases) -> failwith "todo match"
+    | Term.MkClo (theta, n, f) ->
+        bind (lookup_ref f) @@ fun ProgramInfo.({ address }) ->
+        bind (env_ren theta) @@ fun p ->
+            pure @@ Text.cats [
+                p;
+                Text.single @@ Instruction.Push (`param, `address address);
+                Text.single @@ Instruction.(MkClo { env_size = n });
+            ]
 
 and spine : Term.spine -> label Text.builder Compiler.t =
     let open Compiler in function
@@ -107,10 +133,6 @@ and spine : Term.spine -> label Text.builder Compiler.t =
         bind (spine tS) @@ fun pS ->
         bind (term t) @@ fun p ->
         pure @@ Text.cat pS p
-
-and var : var -> label Text.builder = function
-    | `bound i -> Text.single @@ Instruction.Load (`param i)
-    | `env i -> Text.single @@ Instruction.Load (`env i)
 
 let return_mode_of_ref r = match r.ProgramInfo.kind with
     | `well_known -> Util.invariant "[compile] well-known values do not define functions"

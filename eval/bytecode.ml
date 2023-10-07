@@ -1,10 +1,12 @@
 open RuntimeInfo
 
+type offset = int
+type count = int
+
 type call_mode =
-    (* In each, the int is the count of arguments *)
-    [ `func of int
-    | `closure of int
-    | `pap of int
+    [ `func of count
+    | `closure of count
+    | `pap of count
     | `dynamic
     ]
 
@@ -13,20 +15,16 @@ type stack_mode = [ `param | `return ]
 
 (** Identifies which kind of value to load. *)
 type load_mode =
-    [ `env of int (* loads from the environment *)
-    | `param of int (* loads a function parameter *)
+    [ `env of offset (* loads from the environment *)
+    | `param of offset (* loads a function parameter *)
     | `well_known of string (* loads a well-known value *)
     (* | `from_top (* duplicates a value some distance from the top of the stack *)
        (* redundant with `param tbh *)
      *)
-    | `field of int (* loads a field from a construtor *)
-    | `func of address ref
-      (* when we are writing the instruction to load the statically-known address of a function, we
-         actually don't know what that address is yet. That will depend on the precise positions of
-         the instructions in the output byte stream.
-         We use this ref (initialized with zero) to later update when we do figure out what the
-         address is. *)
+    | `field of offset (* loads a field from a construtor *)
     ]
+
+type push_mode = [ `integer of value | `address of address ref ]
 
 type jump_mode =
     [ `unconditional
@@ -41,8 +39,6 @@ type return_mode =
     | `func
     ]
 
-type offset = int
-
 module Instruction = struct
     type 'l t =
         (* Enter a function.
@@ -53,8 +49,8 @@ module Instruction = struct
         | Ret of return_mode
 
         (* Construct a closure with `env_size` values popped from the stack and stored in its
-           environment. The top of the stack must be the function code address. The address of the CLO
-           object is left on the stack. *)
+           environment. The top of the stack must the address of a closure body.
+           The address of the CLO object is left on the stack. *)
         | MkClo of { env_size : int }
 
         (* Construct a partial application with `held_count` held arguments (popped from the stack)
@@ -72,11 +68,11 @@ module Instruction = struct
          *)
         | Match of { ctor : int }
 
-        (* Drops the drop of the stack. *)
-        | Pop of stack_mode
+        (* Drops the value from the stack the given offset away from the top. *)
+        | Pop of stack_mode * offset
 
         (* Loads an immediate value onto the top of the stack. *)
-        | Push of stack_mode * Int32.t
+        | Push of stack_mode * push_mode
 
         (* Loads an indirect value onto the top of the stack. *)
         | Load of load_mode

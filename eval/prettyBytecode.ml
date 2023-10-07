@@ -29,6 +29,10 @@ let print_ret_mode ppf = function
     | `closure -> fprintf ppf "clo"
     | `func -> fprintf ppf "func"
 
+let print_push_mode ppf = function
+    | `integer n -> fprintf ppf "int %Ld" n
+    | `address a -> fprintf ppf "addr %Ld" !a
+
 let print_instruction ppf (i : string Instruction.t) = match i with
     | Call mode ->
         fprintf ppf "call %a" print_call_mode mode
@@ -42,10 +46,10 @@ let print_instruction ppf (i : string Instruction.t) = match i with
         fprintf ppf "const %d %d" ctor field_count
     | Match { ctor } ->
         fprintf ppf "match %d" ctor
-    | Pop mode ->
-        fprintf ppf "pop %a" print_stack_mode mode
-    | Push (mode, n) ->
-        fprintf ppf "push %a %ld" print_stack_mode mode n
+    | Pop (mode, i) ->
+        fprintf ppf "pop %a %d" print_stack_mode mode i
+    | Push (stack_mode, push_mode) ->
+        fprintf ppf "push %a %a" print_stack_mode stack_mode print_push_mode push_mode
     | Load (mode) ->
         fprintf ppf "load %a" print_load_mode mode
     | Store wk ->

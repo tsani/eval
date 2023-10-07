@@ -1,3 +1,5 @@
+open RuntimeInfo
+
 type ctor_name = string
 type tp_name = string
 type tm_name = string
@@ -41,7 +43,7 @@ type builtin_tp = Int | Char | String | Bool
 
 (* Literals L ::= 1 | 2 | ... | 'c' | ... | true | false | "string" | ... *)
 type literal =
-  | IntLit of Int32.t
+  | IntLit of value
   | CharLit of char
   | StringLit of string
   | BoolLit of bool

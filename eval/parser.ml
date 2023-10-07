@@ -320,11 +320,11 @@ let whitespace = label "whitespace character" @@ satisfy is_whitespace
 let digit =
   label "digit character" @@
   satisfy is_digit
-  |> map (fun x -> String.make 1 x |> Int32.of_string)
+  |> map (fun x -> String.make 1 x |> Int64.of_string)
 let raw_number =
-  let f d (acc, pow10) = (Int32.add acc @@ Int32.mul d pow10, Int32.mul pow10 10l) in
+  let f d (acc, pow10) = (Int64.add acc @@ Int64.mul d pow10, Int64.mul pow10 10L) in
   some digit |>
-  map (fun ds -> List.fold_right f ds (0l, 1l)) |>
+  map (fun ds -> List.fold_right f ds (0L, 1L)) |>
   map fst
 let symbol = satisfy is_symbol
 

@@ -11,6 +11,8 @@ let map_option (f : 'a -> 'b) (o : 'a option) : 'b option = match o with
 
 module StringMap = Map.Make(String)
 
+module IntMap = Map.Make(Int)
+
 exception Invariant of string
 exception NotImplemented
 

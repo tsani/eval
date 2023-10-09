@@ -36,7 +36,7 @@ let rec print_tm lvl ppf = function
             rparen (lvl > 0)
 
 and print_case ppf : case -> unit = function
-    | Case (pat, body) ->
+    | Case (pat, n, body) ->
         fprintf ppf "@[<hv 2>| %a ->@ %a@]"
             (print_pattern 0) pat
             (print_tm 1) body
@@ -47,11 +47,11 @@ and print_cases ppf : case list -> unit = function
     | case :: cases -> fprintf ppf "%a@,%a" print_case case print_cases cases
 
 and print_pattern lvl ppf : pattern -> unit = function
-    | ConstPattern (ctor_name, []) -> fprintf ppf "%s" ctor_name
-    | ConstPattern (ctor_name, pat_spine) ->
-        fprintf ppf "%a@[<hv 2>%s@ %a@]%a"
+    | ConstPattern (tag, []) -> fprintf ppf "%d" tag
+    | ConstPattern (tag, pat_spine) ->
+        fprintf ppf "%a@[<hv 2>%d@ %a@]%a"
             lparen (lvl > 9)
-            ctor_name
+            tag
             (print_pat_spine 10) pat_spine
             rparen (lvl > 9)
     | LiteralPattern lit -> fprintf ppf "%a" print_literal lit

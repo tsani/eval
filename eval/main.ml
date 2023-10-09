@@ -28,7 +28,7 @@ let main () =
             | Result.Ok sg_t ->
                 fprintf epf "@.";
                 fprintf ppf "Typechecking succeeded.@.";
-                match Eval.(program (State.empty epf)) program with
+                (* match Eval.(program (State.empty epf)) program with
                 | Result.Error (loc, e) ->
                     fprintf ppf "@[<hv 2>%a: runtime error:@ %a@]@."
                         Loc.print loc.Loc.Span.start
@@ -37,14 +37,25 @@ let main () =
                     fprintf epf "@.";
                     fprintf ppf "Evaluation succeeded.@.%a@."
                         P.Internal.print_evaluated_program (sg_t, sg_e, program);
+                        *)
                     let (pgmInfo, closed_program) =
                         Close.program CompilerCommon.ProgramInfo.empty program
                     in
                     fprintf ppf "Closure conversion succeeded.@.";
                     fprintf ppf "  @[<v>%a@]@." P.Closed.print_program closed_program;
-                    let pgm = Compile.program pgmInfo closed_program in
+                    let pgm = Compile.(program (Ctx.initial pgmInfo) closed_program) in
                     fprintf ppf "Compilation succeeded.@.";
-                    fprintf ppf "@[<v>%a@]@." P.Bytecode.print_program pgm
-
+                    fprintf ppf "@[<v>%a@]@." P.Bytecode.print_program pgm;
+                    let code = Link.program pgmInfo pgm in
+                    fprintf ppf "Linking succeeded.@.";
+                    fprintf ppf "%a@." P.Bytecode.print_linked_program code;
+                    Debug.printf "@[<v>";
+                    let (final_state, status) =
+                        Interpret.(program Ctx.({ code = Array.of_list code }) State.initial)
+                    in
+                    fprintf ppf "@[<v 2>Interpretation succeeded.@,@[<v>%a@]@]@."
+                        (pp_print_list ~pp_sep: pp_print_cut (fun ppf (name, v) ->
+                            fprintf ppf "%s = %Ld" name v))
+                        (Interpret.well_knowns final_state)
 
 let _ = main ()

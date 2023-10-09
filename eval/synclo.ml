@@ -3,6 +3,8 @@ open BasicSyntax
 (* In the closed syntax we distinguish between bound variables and environment variables. *)
 type var = [ `bound of index | `env of index ]
 
+type ctor_tag = int
+
 module EnvRen = struct
     (* A renaming for an environment. Used to compute the restricted environment for a closure. *)
     type t = var OSet.t
@@ -15,7 +17,7 @@ end
 
 module Term = struct
     type pattern =
-        | ConstPattern of ctor_name * pattern list
+        | ConstPattern of ctor_tag * pattern list
         | LiteralPattern of literal
         | VariablePattern
         | WildcardPattern
@@ -44,7 +46,7 @@ module Term = struct
         | Match of t * case list
 
     and spine = t list
-    and case = Case of pattern * t
+    and case = Case of pattern * int (* number of bound variables *) * t
 end
 
 module Decl = struct

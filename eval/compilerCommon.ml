@@ -3,7 +3,7 @@ open RuntimeInfo
 module CtorMap = Util.StringMap
 module RefMap = Util.StringMap
 
-type index = int
+type ctor_tag = int
 type arity = int
 
 type decl_kind =
@@ -16,13 +16,18 @@ type decl_kind =
 
 module ProgramInfo = struct
     type ref_spec = {
-        kind : decl_kind;
+        kind : decl_kind ref;
         arity : int;
         address : address ref;
     }
 
+    type ctor_spec = {
+        arity : int;
+        tag : ctor_tag;
+    }
+
     type t = {
-        ctors : (index * arity) CtorMap.t;
+        ctors : ctor_spec CtorMap.t;
         refs : ref_spec RefMap.t;
     }
 

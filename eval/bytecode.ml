@@ -18,10 +18,10 @@ type load_mode =
     [ `env of offset (* loads from the environment *)
     | `param of offset (* loads a function parameter *)
     | `well_known of string (* loads a well-known value *)
-    (* | `from_top (* duplicates a value some distance from the top of the stack *)
-       (* redundant with `param tbh *)
-     *)
-    | `field of offset (* loads a field from a construtor *)
+    | `constructor
+        (* This load operation pops from the stack the heap address of a constructor object. *)
+        (* loads a constructor together with all its fields onto the stack in this order from top
+           of stack down: ctor tag, field 0, field 1, etc. *)
     ]
 
 type push_mode = [ `integer of value | `address of address ref ]
@@ -35,8 +35,20 @@ type jump_mode =
 
 type return_mode =
     (* returning from a closure has a little more ceremony than returning from a pure function *)
-    [ `closure
-    | `func
+    [ `closure of int (* the count of parameters *)
+    | `func of int (* the count of parameters *)
+    ]
+
+type move_mode =
+    [ `param_to_return
+    | `return_to_param
+    ]
+
+type status =
+    [ `inexhaustive_match
+    | `finished
+    | `running
+    | `loop
     ]
 
 module Instruction = struct
@@ -60,19 +72,16 @@ module Instruction = struct
 
         (* Construct a value with the given constructor tag and number of fields. That many values are
            removed from the stack. The address of the object is left on the stack. *)
-        | Const of { ctor : int ; field_count : int }
-
-        (* Compares the ctor tag of the top with the given tag. Doesn't consume the top.
-           If the tag matches, then all the fields of the constructor are loaded onto the stack.
-           Regardless, a boolean indicating the success of the match is loaded at the top after.
-         *)
-        | Match of { ctor : int }
+        | Const of { tag : int; arity : int }
 
         (* Drops the value from the stack the given offset away from the top. *)
         | Pop of stack_mode * offset
 
         (* Loads an immediate value onto the top of the stack. *)
         | Push of stack_mode * push_mode
+
+        (* Moves the top of one stack to the other. *)
+        | Move of move_mode
 
         (* Loads an indirect value onto the top of the stack. *)
         | Load of load_mode
@@ -84,6 +93,12 @@ module Instruction = struct
 
         (* Performs a jump. Conditional jumps consume the top of the stack. *)
         | Jump of jump_mode * 'l
+
+        (* Synthetic instruction that doesn't actually do anything, but identifies the code address
+           of a label. *)
+        | Label of 'l
+
+        | Halt of status (* Halt `running is actually a no-op *)
 end
 
 module Text = struct
@@ -105,11 +120,16 @@ module Text = struct
 end
 
 module Program = struct
-    type t = {
+    type 'l t = {
         well_knowns : string list;
-        functions : (string * string Text.t) list;
-        top : string Text.builder;
+        functions : (string * 'l Text.t) list;
+        top : 'l Text.builder;
     }
 
     let empty = { well_knowns = []; functions = []; top = Text.empty }
 end
+
+
+(** A fully resolved instruction, in which function addresses are known and labels-jumps are
+    replaced with offset jumps. *)
+type instr = offset Instruction.t

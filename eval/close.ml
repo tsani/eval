@@ -60,7 +60,7 @@ module Ctx = struct
     }
 end
 
-let new_ref_spec kind arity = ProgramInfo.({ kind; arity; address = ref 0L })
+let new_ref_spec kind arity = ProgramInfo.({ kind = ref kind; arity; address = ref 0L })
 
 let extend_refs_with_closure_bodies
         (clo_bodies : clo_body_spec CloBodyMap.t)
@@ -127,19 +127,27 @@ module Cloco = struct
     let bumped_watermark (w : watermark) (m : 'a t) : 'a t =
         fun ctx s -> m { ctx with watermark = ctx.watermark + w } s
 
-    let lookup_ctor_arity c : arity t = fun ctx s ->
+    let lookup_ctor c : ProgramInfo.ctor_spec t = fun ctx s ->
         (s, match CtorMap.find_opt c ctx.info.ctors with
             | None -> Util.invariant "[close] all constructors have known arities"
-            | Some (_, n) -> n)
+            | Some c -> c)
 
     let lookup_ref_arity f : arity t = fun ctx s ->
         (s, match RefMap.find_opt f ctx.info.refs with
-            | None -> Util.invariant "[close] all refs have known arities"
+            | None -> Util.invariant ("[close] ref " ^ f ^ " has a known arity")
             | Some r -> r.arity)
 
     let get_env_ren : RawER.t t = fun w s -> (s, s.theta)
 
     let put_env_ren (theta : RawER.t) : unit t = fun _ s -> { s with theta }, ()
+
+    let with_ref_arity (f : tm_name) (kind : decl_kind) (n : arity) (m : 'a t) : 'a t = fun ctx s ->
+        let open ProgramInfo in
+        m { ctx with info =
+            { ctx.info with refs =
+                RefMap.add f (new_ref_spec kind n) ctx.info.refs
+            }
+        } s
 end
 
 (* Whenever we encounter a variable, we compare it to the current watermark.
@@ -199,11 +207,14 @@ let bump_of_rec_flag = function
     | Rec -> Cloco.bumped_watermark 1
     | NonRec -> fun x -> x
 
-let rec pattern : I.Term.pattern -> C.Term.pattern = function
-    | I.Term.LiteralPattern (_, l) -> C.Term.LiteralPattern l
-    | I.Term.WildcardPattern _ -> C.Term.WildcardPattern
-    | I.Term.VariablePattern (_, _) -> C.Term.VariablePattern
-    | I.Term.ConstPattern (_, c, ps) -> C.Term.ConstPattern (c, List.map pattern ps)
+let rec pattern : I.Term.pattern -> C.Term.pattern Cloco.t = let open Cloco in function
+    | I.Term.LiteralPattern (_, l) -> pure @@ C.Term.LiteralPattern l
+    | I.Term.WildcardPattern _ -> pure @@ C.Term.WildcardPattern
+    | I.Term.VariablePattern (_, _) -> pure @@ C.Term.VariablePattern
+    | I.Term.ConstPattern (_, c, ps) ->
+        bind (lookup_ctor c) @@ fun ctor ->
+        bind (traverse pattern ps) @@ fun ps ->
+        pure @@ C.Term.ConstPattern (ctor.tag, ps)
 
 (** Eta-expands an application of a head to account for a partial constructor or ref application.
     expand tH n tS requires:
@@ -243,7 +254,7 @@ let rec term : I.Term.t -> C.Term.t Cloco.t =
     in
     let arity_of_head = function
         | I.Term.Var _ -> pure `unknown
-        | I.Term.Const (_, c) -> bind (lookup_ctor_arity c) @@ fun n -> pure @@ `known n
+        | I.Term.Const (_, c) -> bind (lookup_ctor c) @@ fun ctor -> pure @@ `known ctor.arity
         | I.Term.Ref (_, r) -> bind (lookup_ref_arity r) @@ fun n -> pure @@ `known n
         | I.Term.Prim (_, p) -> pure @@ `known (Prim.arity p)
     in
@@ -269,11 +280,17 @@ let rec term : I.Term.t -> C.Term.t Cloco.t =
 and case : I.Term.case -> C.Term.case Cloco.t =
     let open Cloco in function
     | I.Term.Case (_, p, e) ->
-        let p' = pattern p in
-        bind (bumped_watermark (I.Term.count_pattern_vars p) @@ term e) @@ fun e' ->
-        pure (C.Term.Case (p', e'))
+        let n = I.Term.count_pattern_vars p in
+        bind (pattern p) @@ fun p ->
+        bind (bumped_watermark n @@ term e) @@ fun e ->
+        pure (C.Term.Case (p, n, e))
 
 and spine (tS : I.Term.spine) : C.Term.spine Cloco.t = Cloco.traverse term tS
+
+let is_static_function : I.Term.t -> bool =
+    function
+    | I.Term.Fun _ -> true
+    | _ -> false
 
 let tm_decl : I.Term.t I.Decl.tm -> (decl_kind * C.Decl.tm) Cloco.t =
     let var i = C.Term.(App (Var (`bound i), [])) in
@@ -282,7 +299,12 @@ let tm_decl : I.Term.t I.Decl.tm -> (decl_kind * C.Decl.tm) Cloco.t =
     function
     | I.Decl.({ body = None }) -> failwith "todo"
     | I.Decl.({ name; rec_flag; body = Some body }) ->
-        bind (bump_of_rec_flag rec_flag @@ term body) @@ function
+        let kind =
+            if is_static_function body
+            then `func
+            else `well_known
+        in
+        bind (with_ref_arity name kind 0 @@ bump_of_rec_flag rec_flag @@ term body) @@ function
         | C.Term.MkClo (theta, _, _) when not (ER.is_empty theta) ->
             Util.invariant "[close] top-level closure is trivial"
         | C.Term.MkClo (theta, n, f) ->
@@ -328,7 +350,8 @@ let rec program : ProgramInfo.t ->  I.Decl.program -> ProgramInfo.t * C.Decl.pro
                     constructors
                     |> List.map (fun I.Decl.({ name; fields }) -> (name, List.length fields))
                     |> List.fold_left
-                        (fun (i, ctors) (c, n) -> (i + 1, CtorMap.add c (i, n) ctors))
+                        (fun (i, ctors) (c, n) ->
+                            (i + 1, CtorMap.add c ProgramInfo.({ tag = i; arity = n }) ctors))
                         (0, pgmInfo.ctors)
                     (* we number all the constructors in each type because the compiler will use
                        these numbers to identify / represent the constructors later *)

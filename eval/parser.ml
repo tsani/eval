@@ -611,7 +611,7 @@ let rec term () : Term.t t =
     pure @@ fold_ops t ts
   in
   let literal_term () = map (fun (loc, lit) -> Term.Lit (loc, lit)) literal in
-  let rec term8 () = choice [literal_term; app] in
+  let rec term8 () = choice [literal_term; app; fun _ -> parenthesized @@ force term] in
   let rec term7 () = parse_op op_at term8 term7 in
   let rec term6 () = parse_op op_star term7 term6 in
   let rec term5 () = parse_op op_plus term6 term5 in
@@ -619,7 +619,7 @@ let rec term () : Term.t t =
   let rec term3 () = parse_op (alt' op_langle op_eql) term4 term3 in
   let rec term2 () = parse_op op_ampersand2 term3 term2 in
   let rec term1 () = parse_op op_pipe2 term2 term1 in
-  choice [let_; match_; lam; term1; fun _ -> parenthesized @@ force term]
+  choice [let_; match_; lam; term1]
 
 let tm_decl : Decl.tm t =
   bind kw_def @@ fun (loc_def, _) ->

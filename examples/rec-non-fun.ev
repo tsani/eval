@@ -1,0 +1,1 @@
+def rec foo = let n = 1 in fun y -> foo n + y

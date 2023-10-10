@@ -18,6 +18,7 @@ let print_load_mode ppf = function
     | `param n -> fprintf ppf "param %d" n
     | `well_known s -> fprintf ppf "well-known %s" s
     | `constructor -> fprintf ppf "ctor"
+    | `field n -> fprintf ppf "field %d" n
 
 let print_jump_mode ppf = function
     | `unconditional -> ()

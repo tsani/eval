@@ -45,25 +45,44 @@ function or are too large to fit into a value are stored on the heap, and are re
 address that can be moved around on the stack. These items are called _heap objects_ or just
 _objects_.
 
-There are a few kinds of objects:
-- functions, of which there are two kinds:
-    - CLO - closures:
-        - header that contains:
-            - a tag identifying this as a closure
-            - the count of environment variables
-            - the count of required function parameters
-            - a code pointer
-        - the environment variables' values come next
-    - PAP - partial applications: (It's not clear how much we need these vs just using closures)
-        - a header that contains:
-            - a tag identifying this as a partial application
-            - the count `N` of held argumnets
-            - the count `K` of missing arguments
-            - a heap object pointer to a closure
-        - an array of arguments of size N
-- constructors:
-    - header that contains the constructor tag & count of fields
-    - the field values come next
+Every heap object is made up of several values, each 64 bits wide.
+- first it has one value making up a header.
+    - 8 bits tag identifying what kind it is: CLO, CON
+    - and every following octet represents a count or index according to the type of object
+    - 8 bits count 1
+    - 8 bits count 2
+    - 8 bits count 3
+    - for a total of 7 counts
+- then some values, usually an amount specified in a count, or up to some limit specified in a
+  count.
+
+## CON - Constructors
+
+- ID: 0
+
+- count 1: constructor ID
+- count 2: number of fields
+
+Each field is a value.
+
+## CLO - Closures
+
+- ID: 1
+
+- count 1: env size
+
+- first value: closure body address
+- subsequent values: environment values
+
+## PAP - Partial application
+
+- ID: 2
+
+- count 1: held arguments
+- count 2: missing arguments
+
+- first value: address of a CLO object
+- subsequent values: held arguments
 
 # The code segment
 
@@ -159,39 +178,6 @@ load_p 0 ; load parameter var 0 (y)
 add
 ret      ; pops the env and return addresses from the call stack, sets PC to return address
 ```
-
-This gets complicated with closures. Recall the example
-
-
-```eval
-def foo = let x = 5 in fun y -> x + y
-```
-
-## Making an exact call
-
-Then later, when we want to call `foo`, we have something that looks like this.
-
-```evalbc
-load_i 7          ; argument (y)
-load_v $clo_foo   ; load the heap address of the closure
-dcall_clo 1       ; push PC on call stack, pop closure from arg stack, enter it
-```
-
-Statically, we know that `$value_foo` will hold a closure that requires exactly one argument, which
-is the amount provided.
-
-## Forming a PAP
-
-On the other hand, what if the function `foo` is known to require two arguments, but only one is
-provided? Then we can jump straight to the construction of the PAP.
-
-```evalbc
-push_i 7          ; argument
-push_a $clo_foo   ; closure address
-mkpap 1 1         ; 1 held argument and 1 missing argument
-```
-
-What's left on the stack is the heap address of the PAP.
 
 ## What if there are too many arguments?
 

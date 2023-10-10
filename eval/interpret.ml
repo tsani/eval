@@ -9,6 +9,8 @@ type stack = value list
 
 let heap_size = 4096
 type heap_addr = Int64.t
+type code_addr = Int64.t
+type heap = value Array.t
 
 module WK = Util.StringMap
 
@@ -16,8 +18,8 @@ module State = struct
     type t = {
         pc : int; (* program counter; index into the code array *)
         ep : heap_addr; (* environment pointer, used to load env vars *)
-        heap : value Array.t;
-        next_free : int;
+        heap : heap;
+        next_free : heap_addr;
         param_stack : stack;
         return_stack : stack;
         well_knowns : heap_addr WK.t;
@@ -27,7 +29,7 @@ module State = struct
         ep = Int64.zero;
         pc = 0;
         heap = Array.make heap_size Int64.zero;
-        next_free = 0;
+        next_free = Int64.zero;
         param_stack = [];
         return_stack = [];
         well_knowns = WK.empty;
@@ -40,6 +42,100 @@ module Ctx = struct
     type t = {
         code : instr Array.t;
     }
+end
+
+module HeapObject = struct
+    module Kind = struct
+        type t =
+            | CON
+            | CLO
+            | PAP
+
+        let to_tag = function
+            | CON -> '\x00'
+            | CLO -> '\x01'
+            | PAP -> '\x02'
+
+        let of_tag = function
+            | '\x00' -> CON
+            | '\x01' -> CLO
+            | '\x02' -> PAP
+            | _ -> Util.invariant "[interpret] all tags are known"
+    end
+
+    (** Decomposes a value into 8 8-bit integers. *)
+    let decompose_value (v : value) : char list =
+        let b = Bytes.make 8 '\x00' in
+        Bytes.set_int64_ne b 0 v;
+        List.init 8 (fun i -> Bytes.get b i)
+
+    module Header = struct
+        type t = value
+
+        let encode (k : Kind.t) (counts : int list) : t =
+            if List.length counts > 7 then
+                Util.invariant "[interpret] heap object header has at most 7 counts";
+            let open Bytes in
+            let b = make 8 '\x00' in
+            set b 0 (Kind.to_tag k);
+            List.iteri (fun i n -> set b (1 + i) (Char.chr n)) counts;
+            get_int64_ne b 0
+
+        let decode (hdr : t) : Kind.t * int list =
+            let tag :: counts = decompose_value hdr in
+            (Kind.of_tag tag, List.map Char.code counts)
+    end
+
+    type t =
+        | Con of { tag : int; arity : int; fields : value list }
+        | Clo of { env_size : int; body : code_addr; env : value list }
+        | Pap of { held : int; missing : int; clo : heap_addr; fields : value list }
+
+    (** Converts the heap object to a list of values. *)
+    let to_value_list = function
+        | Con { tag; arity; fields } ->
+            Header.(encode Kind.CON [tag; arity]) :: fields
+        | Clo { env_size; body; env } ->
+            Header.(encode Kind.CLO [env_size]) :: body :: env
+        | Pap { held; missing; clo; fields } ->
+            Header.(encode Kind.PAP [held; missing]) :: clo :: fields
+
+    (** Writes a heap object to a heap at the given address. *)
+    let encode_at (pos : heap_addr) (heap : heap) (obj : t) : unit =
+        let pos = Int64.to_int pos in
+        List.iteri (fun i v -> heap.(pos + i) <- v) (to_value_list obj)
+
+    (** Decodes a heap object from a heap at the given address. *)
+    let decode_at (pos : heap_addr) (heap : heap) : t =
+        let pos = Int64.to_int pos in
+        match Header.decode heap.(pos) with
+        | CON, tag :: arity :: _ ->
+            Con {
+                tag;
+                arity;
+                fields = List.init arity (fun i -> heap.(pos + i + 1));
+            }
+        | CLO, env_size :: _ ->
+            Clo {
+                env_size;
+                body = heap.(pos + 1);
+                env = List.init env_size (fun i -> heap.(pos + i + 2));
+            }
+        | PAP, held :: missing :: _ ->
+            Pap {
+                held;
+                missing;
+                clo = heap.(pos + 1);
+                fields = List.init held (fun i -> heap.(pos + i + 2));
+            }
+
+    (** Calculates the size (as a count of values) of the given heap object. *)
+    let size : t -> int = function
+        | Con { arity } -> 1 + arity
+        | Clo { env_size } -> 2 + env_size
+        | Pap { held; missing } -> 2 + held
+        (* Everything gets a +1 for the header, then Clo and Pap get an extra +1 since they hold an
+           address in addition to their fields. *)
 end
 
 (** Pops an item from a stack a given offset away from the top. *)
@@ -112,11 +208,25 @@ module Interpreter = struct
     let pop (stk : stack_mode) (offset : int) : value t =
         modify_stack_with stk (stack_pop offset)
 
+    (** Pop multiple values from the given stack at the given offset *)
+    let pops n (stk : stack_mode) (offset : int) : value list t =
+        let rec go n acc =
+            if n = 0
+            then pure acc
+            else bind (pop stk offset) @@ fun x -> go (n-1) (x :: acc)
+        in
+        go n []
+
     let peek (stk : stack_mode) (offset :int) : value t =
         modify_stack_with stk (fun s -> (s, stack_peek offset s))
 
     let push (stk : stack_mode) (v : value) : unit t =
         modify_stack_with stk (stack_push v)
+
+    (** Pushes all the given values onto a stack. *)
+    let rec pushes (stk : stack_mode) : value list -> unit t = function
+        | [] -> pure ()
+        | v :: vs -> bind (push stk v) @@ fun _ -> pushes stk vs
 
     (** Sets the PC to the given value. *)
     let jump_abs (pc : int) : unit t = modify (fun s -> { s with pc })
@@ -134,6 +244,19 @@ module Interpreter = struct
     (** Gets a value from the heap. *)
     let deref (addr : heap_addr) (offset : int) = fun ctx s ->
         (s, s.State.heap.(Int64.to_int addr + offset))
+
+    let load_heap_object (pos : heap_addr) : HeapObject.t t = fun ctx s ->
+        (s, HeapObject.decode_at pos s.State.heap)
+
+    (** Allocates space on the heap for the object, writes it to the heap, and returns the
+        address of the object. *)
+    let store_heap_object (obj : HeapObject.t) : heap_addr t = fun ctx s ->
+        let open State in
+        let addr = s.next_free in
+        HeapObject.encode_at addr s.State.heap obj;
+        ( { s with next_free = Int64.add addr (Int64.of_int @@ HeapObject.size obj) }
+        , addr
+        )
 end
 
 type exec = status Interpreter.t
@@ -168,7 +291,12 @@ let exec_ret : return_mode -> exec = function
 
 let exec_mkclo n : exec = failwith "todo mkclo"
 
-let exec_const (tag, arity) : exec = failwith "todo const"
+let exec_const (tag, arity) : exec =
+    bind (pops arity `param 0) @@ fun fields ->
+    let obj = HeapObject.(Con { tag; arity; fields }) in
+    bind (store_heap_object obj) @@ fun addr ->
+    bind (push `param addr) @@ fun _ ->
+    pure `running
 
 let exec_pop (stk, offset) : exec =
     bind (pop stk offset) @@ fun _ ->
@@ -199,7 +327,22 @@ let exec_load mode : exec =
         bind (deref s.ep i) @@ fun v ->
         bind (push `param v) @@ fun _ ->
         pure `running
-    | `constructor -> failwith "load constructor"
+    | `constructor ->
+        bind (pop `param 0) @@ fun addr ->
+        bind (load_heap_object addr) @@ let open HeapObject in begin function
+            | Con { tag; fields } ->
+                bind (push `param @@ Int64.of_int tag) @@ fun _ ->
+                pure `running
+            | _ -> Util.invariant "[interpret] address refers to a constructor"
+        end
+    | `field n ->
+        bind (pop `param 0) @@ fun addr ->
+        bind (load_heap_object addr) @@ let open HeapObject in begin function
+            | Con { tag; fields } ->
+                bind (push `param @@ List.nth fields n) @@ fun _ ->
+                pure `running
+            | _ -> Util.invariant "[interpret] address refers to a constructor"
+        end
 
 let exec_store name : exec =
     bind (pop `param 0) @@ fun v ->

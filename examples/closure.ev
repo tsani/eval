@@ -1,0 +1,4 @@
+def foo =
+    let n = 5 in
+    let f = fun x y -> n + x + y in
+    f 2

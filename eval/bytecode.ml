@@ -18,10 +18,8 @@ type load_mode =
     [ `env of offset (* loads from the environment *)
     | `param of offset (* loads a function parameter *)
     | `well_known of string (* loads a well-known value *)
-    | `constructor
-        (* This load operation pops from the stack the heap address of a constructor object. *)
-        (* loads a constructor together with all its fields onto the stack in this order from top
-           of stack down: ctor tag, field 0, field 1, etc. *)
+    | `constructor (* loads the tag of a constructor *)
+    | `field of offset (* loads the value from a field of a constructor *)
     ]
 
 type push_mode = [ `integer of value | `address of address ref ]

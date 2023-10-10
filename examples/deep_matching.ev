@@ -1,0 +1,18 @@
+type Nat =
+    | Z
+    | S Nat
+
+def rec half = fun n -> match n with
+    | Z -> Z
+    | S Z -> Z
+    | S (S n) -> S (half n)
+
+def rec int_of_nat = fun n -> match n with
+    | Z -> 0
+    | S n -> 1 + int_of_nat n
+
+def rec nat_of_int = fun n -> match n with
+    | 0 -> Z
+    | n -> S (nat_of_int (n + -1))
+
+def five = int_of_nat (half (nat_of_int 11))

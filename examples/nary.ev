@@ -1,0 +1,5 @@
+def non_comm = fun a b -> a + -b
+
+def three = non_comm 5 2
+
+def neg_1 = non_comm 4 5

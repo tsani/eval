@@ -109,6 +109,10 @@ let rec env_ren = let open Compiler in function
         bind (var v) @@ fun pVar ->
         pure @@ Text.cat pS pVar
 
+(** Generates bytecode that checks whether the value on the top of the stack matches the given
+    pattern. If the pattern does _not_ match, then a jump is made to the given failure label.
+    If the pattern does match, then the pattern code falls through.
+    Regardless, the top value of the stack is consumed. *)
 let rec pattern
         (failure : 'l)
         (pat : Term.pattern)
@@ -131,9 +135,9 @@ let rec pattern
         ])
     | LiteralPattern _ -> failwith "[compile] literal patterns other than int not supported"
     | ConstPattern (c, pats) ->
-        bind (pats |> traverse (fun pat -> bind new_label @@ fun l -> pure (l, pat))) @@
-        fun labelled_pats -> (* each pat here is equipped with a label referring to the code that
-        cleans up the value that pattern matches on and everything after it *)
+        bind new_label @@ fun inner_failure ->
+        bind new_label @@ fun success ->
+        (*
         bind new_label @@ fun cleanup_all ->
         let cleanup_code =
             Text.cat
@@ -148,19 +152,34 @@ let rec pattern
                     labelled_pats)
                 (Text.single @@ Instruction.Jump (`unconditional, failure))
         in
-        bind (labelled_pats |> traverse_rev (fun (failure, pat) -> pattern failure pat)) @@ fun pat_bodies ->
-        bind new_label @@ fun success ->
-        pure @@ Text.cats [
-            Text.chunk @@ Instruction.([
-                Load `constructor;
+        *)
+        bind (pats |> traverse_rev (fun pat -> pattern inner_failure pat)) @@ fun pat_bodies ->
+        let open Text in
+        pure @@ cats Instruction.[
+            chunk @@ [
+                Load (`param 0); (* duplicate the constructor address *)
+                Load `constructor; (* replace the CON address with the constructor tag *)
                 Push (`param, `integer (Int64.neg (Int64.of_int c)));
                 Prim Prim.Plus;
-                Jump (`nonzero, cleanup_all);
-            ]);
-            Text.cats pat_bodies;
-            Text.single (Jump (`unconditional, success));
-            cleanup_code;
-            Text.single (Label success);
+                Jump (`nonzero, inner_failure);
+            ];
+            cats @@ List.mapi
+                (fun i pat_body -> cats [
+                    chunk [
+                        Load (`param 0); (* duplicate the constructor address *)
+                        Load (`field i); (* replace with the nth field *)
+                    ];
+                    pat_body;
+                ])
+                pat_bodies;
+            chunk @@ [
+                Jump (`unconditional, success);
+                Label inner_failure;
+                Pop (`param, 0);
+                Jump (`unconditional, failure);
+                Label success;
+                Pop (`param, 0);
+            ];
         ]
 
 let rec term (t : Term.t) : 'l Text.builder Compiler.t =
@@ -168,7 +187,7 @@ let rec term (t : Term.t) : 'l Text.builder Compiler.t =
     match t with
     | Term.Lit lit -> pure @@ literal lit
     | Term.App (tH, tS) ->
-        app 0 (List.rev tS) tH
+        app 0 tS Text.empty tH
         (* Why in reverse? To uphold the calling convention, we need to emit the code to generate
            the arguments from right to left. However, `app` traverses the spine from left to right
            which is the simplest way to get the correct shifting of the variable renaming. *)
@@ -226,14 +245,15 @@ let rec term (t : Term.t) : 'l Text.builder Compiler.t =
                 Text.single @@ Instruction.(MkClo { env_size = n });
             ]
 
-and app n (tS : Term.spine) (tH : Term.head) : 'l Text.builder Compiler.t =
+and app n (tS : Term.spine) (p : 'l Text.builder) (tH : Term.head) : 'l Text.builder Compiler.t =
     let open Compiler in
     match tS with
     | [] -> begin match tH with
         | Term.Var v ->
             bind (var v) @@ fun pVar ->
             pure @@ Text.cats
-            [ pVar
+            [ p
+            ; pVar
             ; if n > 0
               then Text.single @@ Instruction.Call `dynamic
               else Text.empty
@@ -242,21 +262,28 @@ and app n (tS : Term.spine) (tH : Term.head) : 'l Text.builder Compiler.t =
             bind (lookup_ref f) @@ fun ref_spec ->
             (* if List.length tS <> ref_spec.arity then
                 Util.invariant "[compile] ref call spine has n elements"; *)
-            pure @@ Text.cat
+            pure @@ Text.cats [
+                p;
                 (Text.single @@ match !(ref_spec.kind) with
                     | `func -> Instruction.Push (`param, `address ref_spec.address)
-                    | `well_known -> Instruction.Load (`well_known f))
-                (Text.single @@ Instruction.Call (call_mode_of_ref ref_spec n))
+                    | `well_known -> Instruction.Load (`well_known f));
+                if n > 0
+                then Text.single @@ Instruction.Call (call_mode_of_ref ref_spec n)
+                else Text.empty;
+            ]
         | Term.Const c ->
             bind (lookup_ctor c) @@ fun ctor ->
-            pure @@ Text.single @@ Instruction.Const { tag = ctor.tag; arity = ctor.arity }
-        | Term.Prim p ->
-            pure @@ Text.single @@ Instruction.Prim p
+            pure @@ Text.(cats [
+                p;
+                single @@ Instruction.Const { tag = ctor.tag; arity = ctor.arity };
+            ])
+        | Term.Prim op ->
+            pure @@ Text.(cat p (single @@ Instruction.Prim op))
     end
     | t :: tS ->
-        bind (term t) @@ fun p ->
-        bind (with_ren (Ren.shifted 1) @@ app (n+1) tS tH) @@ fun pApp ->
-        pure @@ Text.cat p pApp
+        bind (term t) @@ fun p' ->
+        with_ren (Ren.shifted 1) @@
+        app (n+1) tS (Text.cat p p') tH
 
 let return_mode_of_ref r = match !ProgramInfo.(r.kind) with
     | `well_known -> Util.invariant "[compile] well-known values do not define functions"

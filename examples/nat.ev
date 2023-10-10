@@ -1,0 +1,29 @@
+type Nat =
+    | Z
+    | S Nat
+
+def one = S Z
+
+def two = S (S Z)
+
+def rec add = fun n k -> match n with
+    | Z -> k
+    | S n -> add n (S k)
+
+def three = add one two
+
+def rec mul = fun n k -> match n with
+    | Z -> Z
+    | S n -> add k (mul n k)
+
+def rec int_of_nat = fun n -> match n with
+    | Z -> 0
+    | S n -> 1 + int_of_nat n
+
+def nine = int_of_nat (mul three three)
+
+def rec nat_of_int = fun n -> match n with
+    | 0 -> Z
+    | n -> S (nat_of_int (n + -1))
+
+def int_three = int_of_nat (nat_of_int 3)

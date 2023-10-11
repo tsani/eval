@@ -61,7 +61,7 @@ module Instruction = struct
         (* Construct a closure with `env_size` values popped from the stack and stored in its
            environment. The top of the stack must the address of a closure body.
            The address of the CLO object is left on the stack. *)
-        | MkClo of { env_size : int }
+        | MkClo of { env_size : int; arity : int }
 
         (* Construct a partial application with `held_count` held arguments (popped from the stack)
            and `missing_count` missing arguments. The top of the stack must be the function code

@@ -86,17 +86,37 @@ module HeapObject = struct
             (Kind.of_tag tag, List.map Char.code counts)
     end
 
+    type con_spec = {
+        tag : int;
+        arity : int;
+        fields : value list;
+    }
+
+    type clo_spec = {
+        env_size : int;
+        arity : int;
+        body : code_addr;
+        env : value list;
+    }
+
+    type pap_spec = {
+        held : int;
+        missing : int;
+        clo : heap_addr;
+        fields : value list;
+    }
+
     type t =
-        | Con of { tag : int; arity : int; fields : value list }
-        | Clo of { env_size : int; body : code_addr; env : value list }
-        | Pap of { held : int; missing : int; clo : heap_addr; fields : value list }
+        | Con of con_spec
+        | Clo of clo_spec
+        | Pap of pap_spec
 
     (** Converts the heap object to a list of values. *)
     let to_value_list = function
         | Con { tag; arity; fields } ->
             Header.(encode Kind.CON [tag; arity]) :: fields
-        | Clo { env_size; body; env } ->
-            Header.(encode Kind.CLO [env_size]) :: body :: env
+        | Clo { env_size; arity; body; env } ->
+            Header.(encode Kind.CLO [env_size; arity]) :: body :: env
         | Pap { held; missing; clo; fields } ->
             Header.(encode Kind.PAP [held; missing]) :: clo :: fields
 
@@ -115,9 +135,10 @@ module HeapObject = struct
                 arity;
                 fields = List.init arity (fun i -> heap.(pos + i + 1));
             }
-        | CLO, env_size :: _ ->
+        | CLO, env_size :: arity :: _ ->
             Clo {
                 env_size;
+                arity;
                 body = heap.(pos + 1);
                 env = List.init env_size (fun i -> heap.(pos + i + 2));
             }
@@ -189,6 +210,8 @@ module Interpreter = struct
 
     (** Applies a transformation to the state. *)
     let modify (f : State.t -> State.t) : unit t = fun ctx s -> (f s, ())
+
+    let set_ep ep = modify (fun s -> { s with ep })
 
     (** Applies a transformation to the state that computes something on the side. *)
     let modify_with (f : State.t -> State.t * 'a) : 'a t = fun ctx s ->
@@ -269,25 +292,42 @@ let exec_call : call_mode -> exec = function
         bind (jump_abs @@ Int64.to_int code_addr) @@ fun _ ->
         pure `running
 
-    | _ -> failwith "todo closure calls"
-            (*
     | `closure n ->
-        bind (pop `param) @@ fun heap_addr ->
+        bind (pop `param 0) @@ fun heap_addr ->
         bind get @@ fun s ->
-        bind (push `return (Int64.of_int s.pc)) @ fun _ ->
-            *)
+        bind (push `return s.ep) @@ fun _ ->
+        bind (push `return (Int64.of_int s.pc)) @@ fun _ ->
+        bind (set_ep (Int64.add heap_addr 2L)) @@ fun _ ->
+        bind (deref heap_addr 1) @@ fun clo_body_addr ->
+        bind (jump_abs @@ Int64.to_int clo_body_addr) @@ fun _ ->
+        pure `running
 
-let exec_ret : return_mode -> exec = function
+    | _ -> failwith "todo dynamic calls"
+
+let exec_ret : return_mode -> exec =
+    (* removes the function's parameters from the stack *)
+    let clean_params n = iter (fun () -> void @@ pop `param 1) (List.init n @@ fun _ -> ()) in
+    function
     | `func n ->
-        (* remove the function's parameters from the stack *)
-        bind (iter (fun () -> void @@ pop `param 1) (List.init n @@ fun _ -> ())) @@ fun () ->
+        bind (clean_params n) @@ fun _ ->
         bind (pop `return 0) @@ fun addr ->
         bind (jump_abs @@ Int64.to_int addr) @@ fun _ ->
         pure `running
 
-    | `closure n -> failwith "[interpret] todo closure return"
+    | `closure n ->
+        bind (clean_params n) @@ fun _ ->
+        bind (pop `return 0) @@ fun ret_addr ->
+        bind (pop `return 0) @@ fun ep ->
+        bind (set_ep ep) @@ fun _ ->
+        bind (jump_abs @@ Int64.to_int ret_addr) @@ fun _ ->
+        pure `running
 
-let exec_mkclo n : exec = failwith "todo mkclo"
+let exec_mkclo (env_size, arity) : exec =
+    bind (pops (env_size + 1) `param 0) @@ fun (body :: env) ->
+    let obj = HeapObject.(Clo { env_size; arity; body; env }) in
+    bind (store_heap_object obj) @@ fun addr ->
+    bind (push `param addr) @@ fun _ ->
+    pure `running
 
 let exec_const (tag, arity) : exec =
     bind (pops arity `param 0) @@ fun fields ->
@@ -393,7 +433,7 @@ let exec : exec =
     bind (next_instruction) @@ function
     | Call call_mode -> exec_call call_mode
     | Ret ret_mode -> exec_ret ret_mode
-    | MkClo { env_size } -> exec_mkclo env_size
+    | MkClo { env_size; arity } -> exec_mkclo (env_size, arity)
     | Const { tag; arity } -> exec_const (tag, arity)
     | Pop (stack_mode, offset) -> exec_pop (stack_mode, offset)
     | Push (stack_mode, push_mode) -> exec_push (stack_mode, push_mode)

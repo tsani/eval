@@ -48,8 +48,8 @@ let print_instruction ppf (i : int Instruction.t) = match i with
         fprintf ppf "call %a" print_call_mode mode
     | Ret mode ->
         fprintf ppf "ret %a" print_ret_mode mode
-    | MkClo { env_size } ->
-        fprintf ppf "mkclo %d" env_size
+    | MkClo { env_size; arity } ->
+        fprintf ppf "mkclo %d %d" env_size arity
     | MkPap { held_count; missing_count } ->
         fprintf ppf "mkpap %d %d" held_count missing_count
     | Const { tag; arity } ->

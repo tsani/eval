@@ -1,4 +1,6 @@
 def foo =
     let n = 5 in
-    let f = fun x y -> n + x + y in
-    f 2
+    let f = fun x y -> n + x + -y in
+    f
+
+def ten = foo 7 2

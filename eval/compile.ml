@@ -235,14 +235,14 @@ let rec term (t : Term.t) : 'l Text.builder Compiler.t =
             ];
         ])
 
-    | Term.MkClo (theta, n, f) ->
+    | Term.MkClo (theta, arity, f) ->
         bind (lookup_ref f) @@ fun ProgramInfo.({ address }) ->
         let n = List.length theta in
         bind (env_ren theta) @@ fun p ->
             pure @@ Text.cats [
                 p;
                 Text.single @@ Instruction.Push (`param, `address address);
-                Text.single @@ Instruction.(MkClo { env_size = n });
+                Text.single @@ Instruction.(MkClo { env_size = n; arity });
             ]
 
 and app n (tS : Term.spine) (p : 'l Text.builder) (tH : Term.head) : 'l Text.builder Compiler.t =

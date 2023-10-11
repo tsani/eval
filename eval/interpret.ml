@@ -209,13 +209,11 @@ module Interpreter = struct
         modify_stack_with stk (stack_pop offset)
 
     (** Pop multiple values from the given stack at the given offset *)
-    let pops n (stk : stack_mode) (offset : int) : value list t =
-        let rec go n acc =
-            if n = 0
-            then pure acc
-            else bind (pop stk offset) @@ fun x -> go (n-1) (x :: acc)
-        in
-        go n []
+    let rec pops n (stk : stack_mode) (offset : int) : value list t =
+        if n = 0 then pure [] else
+            bind (pop stk offset) @@ fun x ->
+            bind (pops (n-1) stk offset) @@ fun xs ->
+            pure (x :: xs)
 
     let peek (stk : stack_mode) (offset :int) : value t =
         modify_stack_with stk (fun s -> (s, stack_peek offset s))

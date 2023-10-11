@@ -7,8 +7,10 @@ def rec fold_list : (a -> b -> b) -> List a -> b -> b =
   | Nil -> e
   | Cons x xs -> f x (fold_list f xs e)
 
+def rec len = fun l -> match l with
+    | Nil -> 0
+    | Cons _ xs -> 1 + len xs
+
 def list = Cons 5 (Cons 4 (Cons 3 (Cons 2 (Cons 1 (Cons 0 Nil)))))
 
-def sum = fun l -> fold_list (fun x y -> x + y) l 0
-
-def n = sum list
+def six = len list

@@ -19,6 +19,10 @@ module Ren = struct
     let shifted k = List.map (fun x -> x + k)
     let extended rho = 0 :: shifted 1 rho
 
+    let rec id = function
+        | 0 -> []
+        | n -> extended @@ id (n-1)
+
     let lookup rho i = match List.nth_opt i rho with
         | None -> Util.invariant "[compile] every variable is mapped in the renaming"
         | Some x -> x
@@ -137,23 +141,12 @@ let rec pattern
     | ConstPattern (c, pats) ->
         bind new_label @@ fun inner_failure ->
         bind new_label @@ fun success ->
-        (*
-        bind new_label @@ fun cleanup_all ->
-        let cleanup_code =
-            Text.cat
-                (List.fold_left
-                    begin fun acc (l, pat) ->
-                        Text.cat acc @@ Text.chunk Instruction.[
-                            Pop (`param, 0);
-                            Label l;
-                        ]
-                    end
-                    (Text.single (Instruction.Label cleanup_all))
-                    labelled_pats)
-                (Text.single @@ Instruction.Jump (`unconditional, failure))
-        in
-        *)
+        let field_count = List.length pats in
         bind (pats |> traverse_rev (fun pat -> pattern inner_failure pat)) @@ fun pat_bodies ->
+        (* Why are the patterns processed in reverse?
+           If we have a branch like `Cons x xs -> E`, then the indices are 0 -> x, 1 -> xs.
+           So to arrange that the value to which x is bound ends up on the top of the stack, we
+           process the patterns in reverse order. *)
         let open Text in
         pure @@ cats Instruction.[
             chunk @@ [
@@ -167,7 +160,9 @@ let rec pattern
                 (fun i pat_body -> cats [
                     chunk [
                         Load (`param 0); (* duplicate the constructor address *)
-                        Load (`field i); (* replace with the nth field *)
+                        Load (`field (field_count - i - 1)); (* replace with the nth field *)
+                        (* Because we did the patterns in reverse, we have to 'flip' the index from
+                           this mapi to load the correct field from the constructor. *)
                     ];
                     pat_body;
                 ])
@@ -187,7 +182,7 @@ let rec term (t : Term.t) : 'l Text.builder Compiler.t =
     match t with
     | Term.Lit lit -> pure @@ literal lit
     | Term.App (tH, tS) ->
-        app 0 tS Text.empty tH
+        app 0 (List.rev tS) Text.empty tH
         (* Why in reverse? To uphold the calling convention, we need to emit the code to generate
            the arguments from right to left. However, `app` traverses the spine from left to right
            which is the simplest way to get the correct shifting of the variable renaming. *)
@@ -251,25 +246,34 @@ and app n (tS : Term.spine) (p : 'l Text.builder) (tH : Term.head) : 'l Text.bui
     | [] -> begin match tH with
         | Term.Var v ->
             bind (var v) @@ fun pVar ->
-            pure @@ Text.cats
-            [ p
-            ; pVar
-            ; if n > 0
-              then Text.single @@ Instruction.Call `dynamic
-              else Text.empty
+            let open Text in
+            pure @@ cats [
+                p;
+                pVar;
+                if n > 0 then
+                    chunk Instruction.[
+                        Push (`return, `integer (Int64.of_int n));
+                        Call `dynamic;
+                    ]
+                else empty;
             ]
         | Term.Ref f ->
             bind (lookup_ref f) @@ fun ref_spec ->
-            (* if List.length tS <> ref_spec.arity then
-                Util.invariant "[compile] ref call spine has n elements"; *)
-            pure @@ Text.cats [
+            let open Text in
+            pure @@ cats [
                 p;
-                (Text.single @@ match !(ref_spec.kind) with
+                (single @@ match !(ref_spec.kind) with
                     | `func -> Instruction.Push (`param, `address ref_spec.address)
                     | `well_known -> Instruction.Load (`well_known f));
                 if n > 0
-                then Text.single @@ Instruction.Call (call_mode_of_ref ref_spec n)
-                else Text.empty;
+                    then single @@ Instruction.Call (call_mode_of_ref ref_spec n)
+                    else empty;
+                if n > ref_spec.ProgramInfo.arity
+                    then chunk Instruction.[
+                        Push (`return, `integer (Int64.of_int @@ n - ref_spec.ProgramInfo.arity));
+                        Call `dynamic;
+                    ]
+                    else empty;
             ]
         | Term.Const c ->
             bind (lookup_ctor c) @@ fun ctor ->
@@ -302,7 +306,21 @@ let decl (ctx : Ctx.t) (pgm : 'l Bytecode.Program.t) : Decl.tm -> 'l Bytecode.Pr
         (* now this depends on... whether the term being defined is a *pure* function or not
            Only pure functions have nonzero arity.
            *)
-        let (s', p) = Compiler.with_ren Ren.(extended_by arity) (term body) ctx State.initial in
+        let (s', p) =
+            term body { ctx with var_ren = List.rev @@ Ren.id arity } State.initial
+            (* Why is the initial renaming reversed? It might not have been if I weren't so dumb.
+               Consider that `fun x y z -> ...` has a body `...` that uses indices 0, 1, 2 to refer
+               to the bound variables z y x respectively.
+               Therefore, to get the de Bruijn indices to line up with the stack indices, we need
+               to push the arguments to this function onto the stack _in order_.
+               However, we crucially need to push them _in reverse_ order (from right to left)
+               so that chained calls work properly.
+               That is, consider `f a b c` where `f` takes 1 input to return a function of 2
+               inputs. If a b c are pushed onto the stack in order, then f will use index `0` to
+               refer to the value of `a`, but actually it will get `c` !
+               So since the function's arguments are on the stack in the reverse order from what it
+               expects, we uses a reversed identity renaming to correct this. *)
+        in
         if arity = 0 then
             (* then the body of the declaration needs to happen right away, and its value is
                stored in the well-known name `name` -- that is, this declaration becomes for a

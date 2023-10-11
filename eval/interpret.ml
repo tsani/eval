@@ -16,7 +16,7 @@ module WK = Util.StringMap
 
 module State = struct
     type t = {
-        pc : int; (* program counter; index into the code array *)
+        pc : Int64.t; (* program counter; index into the code array *)
         ep : heap_addr; (* environment pointer, used to load env vars *)
         heap : heap;
         next_free : heap_addr;
@@ -27,9 +27,9 @@ module State = struct
 
     let initial = {
         ep = Int64.zero;
-        pc = 0;
+        pc = Int64.zero;
         heap = Array.make heap_size Int64.zero;
-        next_free = Int64.zero;
+        next_free = Int64.of_int 400;
         param_stack = [];
         return_stack = [];
         well_knowns = WK.empty;
@@ -52,14 +52,14 @@ module HeapObject = struct
             | PAP
 
         let to_tag = function
-            | CON -> '\x00'
-            | CLO -> '\x01'
-            | PAP -> '\x02'
+            | CON -> '\x01'
+            | CLO -> '\x02'
+            | PAP -> '\x03'
 
         let of_tag = function
-            | '\x00' -> CON
-            | '\x01' -> CLO
-            | '\x02' -> PAP
+            | '\x01' -> CON
+            | '\x02' -> CLO
+            | '\x03' -> PAP
             | _ -> Util.invariant "[interpret] all tags are known"
     end
 
@@ -157,6 +157,18 @@ module HeapObject = struct
         | Pap { held; missing } -> 2 + held
         (* Everything gets a +1 for the header, then Clo and Pap get an extra +1 since they hold an
            address in addition to their fields. *)
+
+    let as_clo = function
+        | Clo spec -> spec
+        | _ -> Util.invariant "[interpret] heap object must be a closure"
+
+    let as_con = function
+        | Con spec -> spec
+        | _ -> Util.invariant "[interpret] heap object must be a constructor"
+
+    let as_pap = function
+        | Pap spec -> spec
+        | _ -> Util.invariant "[interpret] heap object must be a partial application"
 end
 
 (** Pops an item from a stack a given offset away from the top. *)
@@ -189,11 +201,11 @@ module Interpreter = struct
 
     (* Loads the instruction at the PC and increments the PC. *)
     let next_instruction : instr t = fun ctx s ->
-        let i = ctx.code.(s.pc) in
+        let i = ctx.code.(Int64.to_int s.pc) in
         Debug.printf "PARAM:  @[%a@]@," print_stack s.param_stack;
         Debug.printf "RETURN: @[%a@]@," print_stack s.return_stack;
-        Debug.printf "TRACE:  %d. %a@," s.pc Pretty.Bytecode.print_instruction i;
-        ({ s with pc = s.pc + 1 }, i)
+        Debug.printf "TRACE:  %Ld. %a@," s.pc Pretty.Bytecode.print_instruction i;
+        ({ s with pc = Int64.add s.pc 1L }, i)
 
     let rec traverse (f : 'a -> 'b t) : 'a list -> 'b list t = function
         | [] -> pure []
@@ -250,10 +262,12 @@ module Interpreter = struct
         | v :: vs -> bind (push stk v) @@ fun _ -> pushes stk vs
 
     (** Sets the PC to the given value. *)
-    let jump_abs (pc : int) : unit t = modify (fun s -> { s with pc })
+    let jump_abs (pc : Int64.t) : unit t = modify (fun s -> { s with pc })
 
     (** Adds the given offset to the PC. *)
-    let jump_rel (offset : int) : unit t = modify (fun s -> { s with pc = s.pc + offset })
+    let jump_rel (offset : int) : unit t = modify (fun s -> {
+        s with pc = Int64.add s.pc @@ Int64.of_int offset
+    })
 
     let move move_mode =
         let (src, dst) = match move_mode with
@@ -288,21 +302,71 @@ let exec_call : call_mode -> exec = function
     | `func n ->
         bind (pop `param 0) @@ fun code_addr ->
         bind get @@ fun s ->
-        bind (push `return (Int64.of_int s.pc)) @@ fun _ ->
-        bind (jump_abs @@ Int64.to_int code_addr) @@ fun _ ->
+        bind (push `return s.pc) @@ fun _ ->
+        bind (jump_abs code_addr) @@ fun _ ->
         pure `running
 
     | `closure n ->
         bind (pop `param 0) @@ fun heap_addr ->
         bind get @@ fun s ->
         bind (push `return s.ep) @@ fun _ ->
-        bind (push `return (Int64.of_int s.pc)) @@ fun _ ->
+        bind (push `return s.pc) @@ fun _ ->
         bind (set_ep (Int64.add heap_addr 2L)) @@ fun _ ->
         bind (deref heap_addr 1) @@ fun clo_body_addr ->
-        bind (jump_abs @@ Int64.to_int clo_body_addr) @@ fun _ ->
+        bind (jump_abs clo_body_addr) @@ fun _ ->
         pure `running
 
-    | _ -> failwith "todo dynamic calls"
+    | `dynamic ->
+        bind (pop `return 0) @@ function
+        | k when k = Int64.zero ->
+            (* a dynamic call with zero arguments is the base case and is a no-op *)
+            pure `running
+        | arg_count ->
+            let arg_count = Int64.to_int arg_count in
+            (* otherwise there are more arguments to apply *)
+            bind (pop `param 0) @@ fun obj_addr ->
+            bind (load_heap_object obj_addr) @@ let open HeapObject in function
+            | Clo { arity } when arg_count < arity ->
+                bind (pops arg_count `param 0) @@ fun args ->
+                bind (store_heap_object @@ Pap {
+                    held = arg_count;
+                    missing = arity - arg_count;
+                    clo = obj_addr;
+                    fields = args;
+                }) @@ fun pap_addr ->
+                bind (push `param pap_addr) @@ fun _ ->
+                pure `running
+            | Clo { arity; body } -> (* then arg_count is >= arity *)
+                bind get @@ fun s ->
+                bind (push `return (Int64.of_int @@ arg_count - arity)) @@ fun _ ->
+                bind (push `return s.ep) @@ fun _ ->
+                bind (push `return @@ Int64.sub s.pc 1L) @@ fun _ ->
+                bind (set_ep (Int64.add obj_addr 2L)) @@ fun _ ->
+                bind (jump_abs body) @@ fun _ ->
+                pure `running
+            | Pap { held; missing; clo; fields } when arg_count < missing ->
+                bind (pops arg_count `param 0) @@ fun args ->
+                bind (store_heap_object @@ Pap {
+                    held = held + arg_count;
+                    missing = missing - arg_count;
+                    clo;
+                    fields = fields @ args;
+                }) @@ fun pap_addr ->
+                bind (push `param pap_addr) @@ fun _ ->
+                pure `running
+            | Pap { held; missing; clo; fields } ->
+                (* there are enough values to call the function now, so we load its saved arguments
+                   onto the stack. They were saved _in order_, so we have to load them in reverse
+                   to arrange that the very first argument ends up on the top of the stack. *)
+                bind (List.rev fields |> iter (fun v -> push `param v)) @@ fun _ ->
+                bind get @@ fun s ->
+                bind (push `return (Int64.of_int @@ missing - arg_count)) @@ fun _ ->
+                bind (push `return s.ep) @@ fun _ ->
+                bind (push `return @@ Int64.sub s.pc 1L) @@ fun _ ->
+                bind (set_ep (Int64.add clo 2L)) @@ fun _ ->
+                bind (deref clo 1) @@ fun clo_body_addr ->
+                bind (jump_abs clo_body_addr) @@ fun _ ->
+                pure `running
 
 let exec_ret : return_mode -> exec =
     (* removes the function's parameters from the stack *)
@@ -311,7 +375,7 @@ let exec_ret : return_mode -> exec =
     | `func n ->
         bind (clean_params n) @@ fun _ ->
         bind (pop `return 0) @@ fun addr ->
-        bind (jump_abs @@ Int64.to_int addr) @@ fun _ ->
+        bind (jump_abs addr) @@ fun _ ->
         pure `running
 
     | `closure n ->
@@ -319,7 +383,7 @@ let exec_ret : return_mode -> exec =
         bind (pop `return 0) @@ fun ret_addr ->
         bind (pop `return 0) @@ fun ep ->
         bind (set_ep ep) @@ fun _ ->
-        bind (jump_abs @@ Int64.to_int ret_addr) @@ fun _ ->
+        bind (jump_abs ret_addr) @@ fun _ ->
         pure `running
 
 let exec_mkclo (env_size, arity) : exec =
@@ -367,20 +431,16 @@ let exec_load mode : exec =
         pure `running
     | `constructor ->
         bind (pop `param 0) @@ fun addr ->
-        bind (load_heap_object addr) @@ let open HeapObject in begin function
-            | Con { tag; fields } ->
-                bind (push `param @@ Int64.of_int tag) @@ fun _ ->
-                pure `running
-            | _ -> Util.invariant "[interpret] address refers to a constructor"
-        end
+        bind (load_heap_object addr) @@ fun obj ->
+        let HeapObject.({ tag; fields }) = HeapObject.as_con obj in
+        bind (push `param @@ Int64.of_int tag) @@ fun _ ->
+        pure `running
     | `field n ->
         bind (pop `param 0) @@ fun addr ->
-        bind (load_heap_object addr) @@ let open HeapObject in begin function
-            | Con { tag; fields } ->
-                bind (push `param @@ List.nth fields n) @@ fun _ ->
-                pure `running
-            | _ -> Util.invariant "[interpret] address refers to a constructor"
-        end
+        bind (load_heap_object addr) @@ fun obj ->
+        let HeapObject.({ tag; fields }) = HeapObject.as_con obj in
+        bind (push `param @@ List.nth fields n) @@ fun _ ->
+        pure `running
 
 let exec_store name : exec =
     bind (pop `param 0) @@ fun v ->

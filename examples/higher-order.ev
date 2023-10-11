@@ -1,0 +1,31 @@
+type List a =
+    | Nil
+    | Cons a (List a)
+
+def rec map = fun f l -> match l with
+    | Nil -> Nil
+    | Cons x xs -> Cons (f x) (map f xs)
+
+def rec iterate = fun n -> match n with
+    | 0 -> fun f x -> x
+    | n ->
+        let g = iterate (n + -1) in
+        fun f x -> f (g f x)
+
+def rec sum = fun l -> match l with
+    | Nil -> 0
+    | Cons x xs -> x + sum xs
+
+def inc = fun x -> x + 1
+
+def rec count_down = fun n -> match n with
+    | 0 -> Nil
+    | n -> Cons n (count_down (n + -1))
+
+def apply_all : a -> List (a -> a) -> List a = fun x l -> map (fun f -> f x) l
+
+def fns : List ((a -> a) -> a -> a) = map iterate (count_down 10)
+
+def nums = apply_all 0 (apply_all inc fns)
+
+def r = sum nums

@@ -1,0 +1,3 @@
+def foo = fun x -> let y = x + 2 in fun z -> z + y
+
+def six = foo 2 2

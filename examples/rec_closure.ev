@@ -1,0 +1,7 @@
+def rec foo =
+    let n = 5 in
+    fun x -> match x with
+    | 0 -> n
+    | x -> x + foo (x + -1)
+
+def eleven = foo 3

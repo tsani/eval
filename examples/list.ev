@@ -11,6 +11,24 @@ def rec len = fun l -> match l with
     | Nil -> 0
     | Cons _ xs -> 1 + len xs
 
-def list = Cons 5 (Cons 4 (Cons 3 (Cons 2 (Cons 1 (Cons 0 Nil)))))
+def rec sum = fun l -> match l with
+    | Nil -> 0
+    | Cons x xs -> x + sum xs
 
-def six = len list
+def rec map = fun f l -> match l with
+    | Nil -> Nil
+    | Cons x xs -> Cons (f x) (map f xs)
+
+def one_two_three = Cons 1 (Cons 2 (Cons 3 Nil))
+
+def rec count_down = fun n -> match n with
+    | 0 -> Nil
+    | n -> Cons n (count_down (n + -1))
+
+def first_100 = count_down 100
+
+def sum_of_first_100 = sum first_100
+
+def double_list = map (fun x -> x + x)
+
+def double_sum_first_100 = sum (double_list first_100)

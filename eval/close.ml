@@ -12,13 +12,13 @@
 *)
 
 open BasicSyntax
-open CompilerCommon
 open Syntax
 
 module I = Syntax.Internal
 module C = Syntax.Closed
-module RawER = I.EnvRen
+module RawER = I.Ren
 module ER = C.EnvRen
+module PI = Pretty.Internal
 
 (** Variables with indices beyond this value are free variables.
     Comparison of an internal syntax variable's index against the watermark determines whether the
@@ -32,6 +32,8 @@ type clo_body_spec = {
 }
 
 module CloBodyMap = Util.StringMap
+
+type clo_body_map = clo_body_spec CloBodyMap.t
 
 (* Closure conversion is stateful:
     - as we encounter variables, we update the current environment renaming to include them
@@ -59,22 +61,6 @@ module Ctx = struct
         info : ProgramInfo.t
     }
 end
-
-let new_ref_spec kind arity = ProgramInfo.({ kind = ref kind; arity; address = ref 0L })
-
-let extend_refs_with_closure_bodies
-        (clo_bodies : clo_body_spec CloBodyMap.t)
-        (refs : ProgramInfo.ref_spec RefMap.t)
-        : ProgramInfo.ref_spec RefMap.t =
-    RefMap.union (fun _ _ _ -> Util.invariant "[close] all ref names are unique")
-        refs
-        (CloBodyMap.to_seq clo_bodies
-        |> Seq.map (fun (f, d) ->
-            (f, new_ref_spec `closure_body d.arity)
-        )
-        |> RefMap.of_seq)
-
-type arity_lookup = [ `ref of string | `ctor of string ]
 
 module Cloco = struct
     (* Cloco monad. *)
@@ -128,26 +114,18 @@ module Cloco = struct
         fun ctx s -> m { ctx with watermark = ctx.watermark + w } s
 
     let lookup_ctor c : ProgramInfo.ctor_spec t = fun ctx s ->
-        (s, match CtorMap.find_opt c ctx.info.ctors with
-            | None -> Util.invariant "[close] all constructors have known arities"
-            | Some c -> c)
+        (s, ProgramInfo.lookup_ctor c ctx.info)
 
-    let lookup_ref_arity f : arity t = fun ctx s ->
-        (s, match RefMap.find_opt f ctx.info.refs with
-            | None -> Util.invariant ("[close] ref " ^ f ^ " has a known arity")
-            | Some r -> r.arity)
+    let lookup_ref f : ProgramInfo.ref_spec t = fun ctx s ->
+        (s, ProgramInfo.lookup_ref f ctx.info)
 
     let get_env_ren : RawER.t t = fun w s -> (s, s.theta)
 
     let put_env_ren (theta : RawER.t) : unit t = fun _ s -> { s with theta }, ()
 
-    let with_ref_arity (f : tm_name) (kind : decl_kind) (n : arity) (m : 'a t) : 'a t = fun ctx s ->
+    let with_ref_arity (f : tm_name) kind (n : arity) (m : 'a t) : 'a t = fun ctx s ->
         let open ProgramInfo in
-        m { ctx with info =
-            { ctx.info with refs =
-                RefMap.add f (new_ref_spec kind n) ctx.info.refs
-            }
-        } s
+        m { ctx with info = ProgramInfo.add_new_ref f (kind, n) ctx.info } s
 end
 
 (* Whenever we encounter a variable, we compare it to the current watermark.
@@ -255,7 +233,7 @@ let rec term : I.Term.t -> C.Term.t Cloco.t =
     let arity_of_head = function
         | I.Term.Var _ -> pure `unknown
         | I.Term.Const (_, c) -> bind (lookup_ctor c) @@ fun ctor -> pure @@ `known ctor.arity
-        | I.Term.Ref (_, r) -> bind (lookup_ref_arity r) @@ fun n -> pure @@ `known n
+        | I.Term.Ref (_, r) -> bind (lookup_ref r) @@ fun r -> pure @@ `known r.arity
         | I.Term.Prim (_, p) -> pure @@ `known (Prim.arity p)
     in
     function
@@ -269,12 +247,12 @@ let rec term : I.Term.t -> C.Term.t Cloco.t =
         bind (term e) @@ fun e' ->
         bind (traverse case cases) @@ fun cases' ->
         pure (C.Term.Match (e', cases'))
-    | I.Term.App (_, tH, tS) ->
+    | I.Term.App (_, tH, tS) as e ->
         bind (arity_of_head tH) @@ function
         | `unknown -> app tH tS
         | `known n ->
             match eta_expand tH n tS with
-            | I.Term.Fun _ as e -> func e
+            | I.Term.Fun _ as e' -> func e'
             | I.Term.App (_, tH, tS) -> app tH tS
 
 and case : I.Term.case -> C.Term.case Cloco.t =
@@ -292,7 +270,7 @@ let is_static_function : I.Term.t -> bool =
     | I.Term.Fun _ -> true
     | _ -> false
 
-let tm_decl : I.Term.t I.Decl.tm -> (decl_kind * C.Decl.tm) Cloco.t =
+let tm_decl : I.Term.t I.Decl.tm -> (ProgramInfo.decl_kind * C.Decl.tm) Cloco.t =
     let var i = C.Term.(App (Var (`bound i), [])) in
     let rec gen_spine n = if n = 0 then [] else var (n-1) :: gen_spine (n-1) in
     let open Cloco in
@@ -330,6 +308,16 @@ let tm_decl : I.Term.t I.Decl.tm -> (decl_kind * C.Decl.tm) Cloco.t =
                 })
             )
 
+let extend_refs_with_closure_bodies
+        (clo_bodies : clo_body_map)
+        (info : ProgramInfo.t)
+        : ProgramInfo.t =
+    CloBodyMap.to_seq clo_bodies
+    |> Seq.fold_left
+        (fun info (f, d) ->
+            ProgramInfo.add_new_ref f (`closure_body, d.arity) info)
+        info
+
 (** Converts a list of functions emitted during closure conversion into a list of genuine function
     declarations. *)
 let declare_closure_bodies (clo_bodies : clo_body_spec CloBodyMap.t) : C.Decl.tm list =
@@ -340,44 +328,26 @@ let declare_closure_bodies (clo_bodies : clo_body_spec CloBodyMap.t) : C.Decl.tm
     |> List.of_seq
 
 let rec program : ProgramInfo.t ->  I.Decl.program -> ProgramInfo.t * C.Decl.program =
-    let open Cloco in fun pgmInfo -> function
-    | [] -> (pgmInfo, [])
+    let open Cloco in fun info -> function
+    | [] -> (info, [])
     | d :: ds -> match d with
-        (* we don't need type declarations anymore, except for knowing the arities of constructors *)
-        | I.Decl.(TpDecl { constructors }) ->
-            let pgmInfo =
-                { pgmInfo with ctors =
-                    constructors
-                    |> List.map (fun I.Decl.({ name; fields }) -> (name, List.length fields))
-                    |> List.fold_left
-                        (fun (i, ctors) (c, n) ->
-                            (i + 1, CtorMap.add c ProgramInfo.({ tag = i; arity = n }) ctors))
-                        (0, pgmInfo.ctors)
-                    (* we number all the constructors in each type because the compiler will use
-                       these numbers to identify / represent the constructors later *)
-                    |> snd
-                }
-            in
-            program pgmInfo ds
-
+        | I.Decl.(TpDecl _) -> program info ds
         | I.Decl.TmDecl d' ->
             let (final_state, (kind, d)) =
                 tm_decl d' Ctx.({
                     watermark = 0;
                     closure_prefix = d'.I.Decl.name;
-                    (* closure conversion of a term needs to know the arity of each ref and
-                       constructor *)
-                    info = pgmInfo;
+                    info;
                 }) State.initial
             in
             (* it emits a list of functions (closure bodies) to hoist to the top level
                thru its final state *)
-            let pgmInfo, ds =
-                program { pgmInfo with refs =
-                    pgmInfo.refs
-                    |> RefMap.add d.name (new_ref_spec kind d.arity)
-                    |> extend_refs_with_closure_bodies final_state.fns
-                } ds
+            let info, ds =
+                program
+                    (info
+                    |> ProgramInfo.add_new_ref d.name (kind, d.arity)
+                    |> extend_refs_with_closure_bodies final_state.fns)
+                    ds
             in
             let closure_body_decls = declare_closure_bodies final_state.fns in
-            (pgmInfo, closure_body_decls @ d :: ds)
+            (info, closure_body_decls @ d :: ds)

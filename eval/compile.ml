@@ -3,7 +3,6 @@
 open BasicSyntax
 open Syntax.Closed
 open Bytecode
-open CompilerCommon
 open RuntimeInfo
 
 module State = struct
@@ -77,19 +76,13 @@ module Compiler = struct
         let s = { label_counter = n + 1 } in
         (s, n)
 
-    let lookup_ctor c : ProgramInfo.ctor_spec t = fun ctx s ->
-        match CtorMap.find_opt c ctx.info.ctors with
-        | None -> Util.invariant "[compile] every ctor has a known arity"
-        | Some x -> (s, x)
+    let lookup_ctor c = fun ctx s -> (s, ProgramInfo.lookup_ctor c ctx.Ctx.info)
 
-    let lookup_ref f : ProgramInfo.ref_spec t = fun ctx s ->
-        match RefMap.find_opt f ctx.info.refs with
-        | None -> Util.invariant "[compile] every ref has a known arity"
-        | Some x -> (s, x)
+    let lookup_ref f = fun ctx s -> (s, ProgramInfo.lookup_ref f ctx.Ctx.info)
 end
 
 let call_mode_of_ref (r : ProgramInfo.ref_spec) =
-    match !(r.kind) with
+    match r.kind with
     | `func -> fun n -> `func n
     | `well_known -> fun n -> `closure n
     | `closure_body -> Util.invariant "[compile] calls to closure bodies are not possible"
@@ -262,7 +255,7 @@ and app n (tS : Term.spine) (p : 'l Text.builder) (tH : Term.head) : 'l Text.bui
             let open Text in
             pure @@ cats [
                 p;
-                (single @@ match !(ref_spec.kind) with
+                (single @@ match ref_spec.kind with
                     | `func -> Instruction.Push (`param, `address ref_spec.address)
                     | `well_known -> Instruction.Load (`well_known f));
                 if n > 0
@@ -289,7 +282,7 @@ and app n (tS : Term.spine) (p : 'l Text.builder) (tH : Term.head) : 'l Text.bui
         with_ren (Ren.shifted 1) @@
         app (n+1) tS (Text.cat p p') tH
 
-let return_mode_of_ref r = match !ProgramInfo.(r.kind) with
+let return_mode_of_ref r = match ProgramInfo.(r.kind) with
     | `well_known -> Util.invariant "[compile] well-known values do not define functions"
     | `func -> `func r.arity
     | `closure_body -> `closure r.arity
@@ -298,10 +291,7 @@ let decl (ctx : Ctx.t) (pgm : 'l Bytecode.Program.t) : Decl.tm -> 'l Bytecode.Pr
     let Bytecode.Program.({ well_knowns; functions; top }) = pgm in
     function
     | Decl.({ name; body; arity }) ->
-        let ref_spec = match RefMap.find_opt name ctx.Ctx.info.refs with
-            | Some x -> x
-            | None -> Util.invariant "[compile] ProgramInfo.t contains all functions"
-        in
+        let ref_spec = ProgramInfo.lookup_ref name ctx.Ctx.info in
         if ref_spec.arity <> arity then Util.invariant "[compile] arity mismatch";
         (* now this depends on... whether the term being defined is a *pure* function or not
            Only pure functions have nonzero arity.

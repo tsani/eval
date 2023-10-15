@@ -38,8 +38,9 @@ let main () =
                     fprintf ppf "Evaluation succeeded.@.%a@."
                         P.Internal.print_evaluated_program (sg_t, sg_e, program);
                         *)
+                    let info = ProgramInfo.collect program in
                     let (pgmInfo, closed_program) =
-                        Close.program CompilerCommon.ProgramInfo.empty program
+                        Close.program ProgramInfo.empty program
                     in
                     fprintf ppf "Closure conversion succeeded.@.";
                     fprintf ppf "  @[<v>%a@]@." P.Closed.print_program closed_program;

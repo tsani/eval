@@ -6,7 +6,7 @@ open Type
 
 open PrettyCommon
 
-let print_env_ren ppf (theta : EnvRen.t) = fprintf ppf "[@[<hv>%a@]]"
+let print_env_ren ppf (theta : Ren.t) = fprintf ppf "[@[<hv>%a@]]"
     (pp_print_list ~pp_sep: comma_space (fun ppf (i, x) -> fprintf ppf "%d/%d" x i))
     (Util.enumerate 0 theta)
 

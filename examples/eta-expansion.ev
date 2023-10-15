@@ -1,0 +1,5 @@
+def plus = fun x y -> x + y
+
+def two_inputs = fun x -> let z = x + 1 in plus z
+
+def three = two_inputs 1 1

@@ -3,7 +3,6 @@
 
 module LabelMap = Util.IntMap (* maps labels (ints) to their position in this function *)
 
-open CompilerCommon
 open Bytecode
 open Instruction
 
@@ -32,7 +31,7 @@ let resolve_labels (body : int Instruction.t list) : instr list =
 (** Resolves the addresses of all these functions, assembling the code segment.
     Each function body also gets its labels resolved in the process. *)
 let resolve_addresses
-        (pgmInfo : ProgramInfo.t)
+        (info : ProgramInfo.t)
         (bodies : (string * int Instruction.t list) list)
         : instr list =
     let rec go i = function
@@ -42,14 +41,11 @@ let resolve_addresses
             body @ go (i + List.length body) bodies
         | (name, body) :: bodies ->
             let body = resolve_labels body in
-            let r = match RefMap.find_opt name pgmInfo.ProgramInfo.refs with
-                | None -> Util.invariant "[link] all refs are known"
-                | Some r -> r
-            in
+            let r = ProgramInfo.lookup_ref name info in
             r.ProgramInfo.address := Int64.of_int i;
             body @ go (i + List.length body) bodies
     in
     go 0 bodies
 
-let program (pgmInfo : ProgramInfo.t) (pgm : int Program.t) : instr list =
-    resolve_addresses pgmInfo Program.(("_", Text.build pgm.top) :: pgm.functions)
+let program (info : ProgramInfo.t) (pgm : int Program.t) : instr list =
+    resolve_addresses info Program.(("_", Text.build pgm.top) :: pgm.functions)

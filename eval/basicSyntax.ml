@@ -9,6 +9,9 @@ type var_name = string
 
 type index = int
 
+type ctor_tag = int
+type arity = int
+
 type rec_flag = Rec | NonRec
 
 (* Looks up a variable in a context or an environment. (They have the same structure.) *)

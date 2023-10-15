@@ -72,9 +72,12 @@ module Ctx = struct
   let to_scope ctx = List.map (fun (x, _) -> x) ctx
 end
 
-module EnvRen = struct
-  (* A renaming for an environment. This renaming only appears briefly during closure conversion
-     before it is translated into a Closed.EnvRen.t *)
+module Ren = struct
+  (* A renaming maps variables to variables.
+     Initially, these internal syntax renamings appeared only briefly during closure conversion.
+     However, it was discovered that eta-expansion, which happens during closure conversion, needs
+     to perform some shifting to prevent the invalidation of some bound variables in the existing
+     application spine being expanded. *)
   type t = index OSet.t
 
   let insert x s = OSet.insert_index x s

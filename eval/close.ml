@@ -16,7 +16,7 @@ open Syntax
 
 module I = Syntax.Internal
 module C = Syntax.Closed
-module RawER = I.Ren
+module RawER = I.EnvRen
 module ER = C.EnvRen
 module PI = Pretty.Internal
 

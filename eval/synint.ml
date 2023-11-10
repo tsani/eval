@@ -72,17 +72,6 @@ module Ctx = struct
   let to_scope ctx = List.map (fun (x, _) -> x) ctx
 end
 
-module Ren = struct
-  (* A renaming maps variables to variables.
-     Initially, these internal syntax renamings appeared only briefly during closure conversion.
-     However, it was discovered that eta-expansion, which happens during closure conversion, needs
-     to perform some shifting to prevent the invalidation of some bound variables in the existing
-     application spine being expanded. *)
-  type t = index OSet.t
-
-  let insert x s = OSet.insert_index x s
-end
-
 (* A term is a an unevaluated expression. *)
 module Term = struct
   type loc = Loc.span
@@ -167,6 +156,23 @@ module Term = struct
       let (xs, e) = collapse_funs e in
       (x :: xs, e)
     | e -> ([], e)
+end
+
+module Subst = struct
+    type t =
+        | Shift of int
+        | Dot of t * Term.t
+end
+
+module EnvRen = struct
+    (* A renaming maps variables to variables.
+       Initially, these internal syntax renamings appeared only briefly during closure conversion.
+       However, it was discovered that eta-expansion, which happens during closure conversion, needs
+       to perform some shifting to prevent the invalidation of some bound variables in the existing
+       application spine being expanded. *)
+    type t = index OSet.t
+
+    let insert x rho = OSet.insert_index x rho
 end
 
 (* A value is the result of evaluating a term. *)

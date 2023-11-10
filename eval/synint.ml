@@ -158,10 +158,53 @@ module Term = struct
     | e -> ([], e)
 end
 
-module Subst = struct
-    type t =
-        | Shift of int
-        | Dot of t * Term.t
+module Ren = struct
+    type t = int (* amount to shift unmapped vars *) * index list (* vars to replace vars with *)
+
+    (* Constructs a renaming a shifts all variables by a given amount. *)
+    let shift n = (n, [])
+
+    (* Weakens a renaming by a given amount. *)
+    let weaken n (k, s) = (k + n, List.map (fun i -> n + i) s)
+
+    (* Adds an index to the front of a renaming. *)
+    let extend (k, s) i =  (k, i :: s)
+
+    (* Weakens a renaming by `n` and extends it with an identity renaming on `n`.
+       This combines weaken and extend and is useful for pushing a renaming across a binder. *)
+    let wk_ext n s =
+        let id = List.init n (fun i -> i) in
+        let (k, s) = weaken n s in
+        (k, id @ s)
+
+    (** Applies a renaming to the index of a variable. *)
+    let rec apply_index (k, s) i = match (s, i) with
+        | [], i -> i + k
+        | j :: _, 0 -> j
+        | _ :: s, i -> apply_index (k, s) (i - 1)
+
+    (** Applies a renaming to a term. *)
+    and apply s = function
+        | Term.Fun (loc, (loc_x, x), t) -> Term.Fun (loc, (loc_x, x), apply (wk_ext 1 s) t)
+        | Term.App (loc, tH, tS) -> Term.App (loc, apply_head s tH, apply_spine s tS)
+        | Term.Let (loc, rec_flag, (loc_x, x), t1, t2) ->
+            Term.Let (loc, rec_flag, (loc_x, x),
+                apply (if rec_flag = Rec then wk_ext 1 s else s) t1,
+                apply (wk_ext 1 s) t2
+            )
+        | Term.Match (loc, t, cases) -> Term.Match (loc, apply s t, apply_cases s cases)
+
+    and apply_head s = function
+        | Term.Var (loc, i) -> Term.Var (loc, apply_index s i)
+        | tH -> tH
+
+    and apply_spine s = List.map (apply s)
+
+    and apply_cases s = List.map (apply_case s)
+
+    and apply_case s (Case (loc, p, t)) =
+        let n = Term.count_pattern_vars p in
+        Case (loc, p, apply (wk_ext n s) t)
 end
 
 module EnvRen = struct

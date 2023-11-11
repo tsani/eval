@@ -59,7 +59,6 @@ let print_parser_label ppf lbl =
   let open Format in
   pp_print_list ~pp_sep: (fun ppf () -> fprintf ppf ",@ ") (fun s -> fprintf ppf "%s") ppf (normalize_label lbl)
 
-
 module ParseError = struct
   type content =
     | NotExactly of { expected : string; actual : string }
@@ -216,16 +215,16 @@ let some (p : 'a t) : 'a list t =
   pure @@ x :: xs
 
 (** `sep_by1 sep p' parses `p', one or more times, with `sep' between each. *)
-let sep_by1 sep p =
+let sep_by1 sep (p : 'a t) : 'a list t =
   bind p @@ fun x ->
   bind (many (sep &> p)) @@ fun xs ->
   pure (x :: xs)
 
 (** `sep_by0 sep p' parses `p', zero or more times, with `sep' between each. *)
-let sep_by0 sep p =
+let sep_by0 sep (p : 'a t) : 'a list t =
   (optional @@ sep_by1 sep p) |> map begin function
-    | None -> pure []
-    | Some xs -> pure xs
+    | None -> []
+    | Some xs -> xs
   end
 
 let choice (ps : 'a t susp list) : 'a t =
@@ -637,7 +636,6 @@ let tm_decl : Decl.tm t =
     })
 
 let ctor_decl : Decl.ctor t =
-  bind op_pipe @@ fun (loc_pipe, _) ->
   bind uident @@ fun (loc_name, name) ->
   bind (force atomic_typ |> many) @@ fun fields ->
   pure Decl.({
@@ -651,7 +649,8 @@ let tp_decl : Decl.tp t =
   bind uident @@ fun (_, name) ->
   bind (many lident) @@ fun xs ->
   bind op_eq @@ fun (loc_eq, _) ->
-  bind (many ctor_decl) @@ fun constructors ->
+  bind (optional op_pipe) @@ fun _ ->
+  bind (sep_by0 op_pipe ctor_decl) @@ fun constructors ->
   pure Decl.({
       name;
       tvar_binders = List.map snd xs;

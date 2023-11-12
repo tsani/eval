@@ -27,8 +27,6 @@ def rec count_down = fun n -> match n with
 
 def first_100 = count_down 100
 
-def sum_of_first_100 = sum first_100
+def plus5_list = let n = 5 in let f = fun x -> x + n in map f
 
-def double_list = map (fun x -> x + x)
-
-def double_sum_first_100 = sum (double_list first_100)
+def result = sum (plus5_list first_100)

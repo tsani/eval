@@ -1,5 +1,9 @@
-def plus = fun x y -> x + y
+def plus3 = fun x -> fun y -> fun z -> x + -y + -z
 
-def two_inputs = fun x -> let z = x + 1 in plus z
+def plus3_raw = plus3
 
-def three = two_inputs 1 1
+def plus3_const = plus3 100
+
+def plus3_let = let x = 100 in plus3 x
+
+def result = let f = plus3_let in f 2 5

@@ -258,15 +258,17 @@ and app n (tS : Term.spine) (p : 'l Text.builder) (tH : Term.head) : 'l Text.bui
                 (single @@ match ref_spec.kind with
                     | `func -> Instruction.Push (`param, `address ref_spec.address)
                     | `well_known -> Instruction.Load (`well_known f));
-                if n > 0
-                    then single @@ Instruction.Call (call_mode_of_ref ref_spec n)
-                    else empty;
-                if n > ref_spec.ProgramInfo.arity
-                    then chunk Instruction.[
-                        Push (`return, `integer (Int64.of_int @@ n - ref_spec.ProgramInfo.arity));
-                        Call `dynamic;
-                    ]
-                    else empty;
+                if ref_spec.ProgramInfo.arity > 0
+                then single @@ Instruction.Call (
+                    call_mode_of_ref ref_spec @@ ref_spec.ProgramInfo.arity
+                )
+                else empty;
+                if n - ref_spec.ProgramInfo.arity > 0
+                then chunk Instruction.[
+                    Push (`return, `integer (Int64.of_int @@ n - ref_spec.ProgramInfo.arity));
+                    Call `dynamic;
+                ]
+                else empty;
             ]
         | Term.Const c ->
             bind (lookup_ctor c) @@ fun ctor ->

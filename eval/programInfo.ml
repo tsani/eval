@@ -42,11 +42,11 @@ let empty = {
 }
 
 let lookup_ref name info = match RefMap.find_opt name info.refs with
-    | None -> Util.invariant "[programInfo] all refs are known"
+    | None -> Util.invariant @@ "[programInfo] ref " ^ name ^ " is known"
     | Some x -> x
 
 let lookup_ctor name info = match CtorMap.find_opt name info.ctors with
-    | None -> Util.invariant "[programInfo] all ctors are known"
+    | None -> Util.invariant @@ "[programInfo] ctor " ^ name ^ " is known"
     | Some x -> x
 
 let add_ref name spec info = { info with refs = RefMap.add name spec info.refs }

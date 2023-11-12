@@ -193,6 +193,7 @@ module Ren = struct
                 apply (wk_ext 1 s) t2
             )
         | Term.Match (loc, t, cases) -> Term.Match (loc, apply s t, apply_cases s cases)
+        | Term.Lit (loc, lit) -> Term.Lit (loc, lit)
 
     and apply_head s = function
         | Term.Var (loc, i) -> Term.Var (loc, apply_index s i)

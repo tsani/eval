@@ -38,19 +38,19 @@ let main () =
                     fprintf ppf "Evaluation succeeded.@.%a@."
                         P.Internal.print_evaluated_program (sg_t, sg_e, program);
                         *)
+                    Debug.printf "@[<v>";
                     let info = ProgramInfo.collect program in
-                    let (pgmInfo, closed_program) =
-                        Close.program ProgramInfo.empty program
+                    let (info, closed_program) =
+                        Close.program info program
                     in
                     fprintf ppf "Closure conversion succeeded.@.";
                     fprintf ppf "  @[<v>%a@]@." P.Closed.print_program closed_program;
-                    let pgm = Compile.(program (Ctx.initial pgmInfo) closed_program) in
+                    let pgm = Compile.(program (Ctx.initial info) closed_program) in
                     fprintf ppf "Compilation succeeded.@.";
                     fprintf ppf "@[<v>%a@]@." P.Bytecode.print_program pgm;
-                    let code = Link.program pgmInfo pgm in
+                    let code = Link.program info pgm in
                     fprintf ppf "Linking succeeded.@.";
                     fprintf ppf "%a@." P.Bytecode.print_linked_program code;
-                    Debug.printf "@[<v>";
                     let (final_state, status) =
                         Interpret.(program Ctx.({ code = Array.of_list code }) State.initial)
                     in

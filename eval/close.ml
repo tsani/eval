@@ -19,6 +19,7 @@ module C = Syntax.Closed
 module RawER = I.EnvRen
 module ER = C.EnvRen
 module PI = Pretty.Internal
+module PC = Pretty.Closed
 
 (** Variables with indices beyond this value are free variables.
     Comparison of an internal syntax variable's index against the watermark determines whether the
@@ -199,19 +200,33 @@ let rec pattern : I.Term.pattern -> C.Term.pattern Cloco.t = let open Cloco in f
         - n is the arity of tH
     Then n - |tS| is the number of abstractions that are generated. *)
 let eta_expand tH n tS =
+    (* idea: build a function like this:
+            fun mk_app -> 'Fn x1 -> ... -> Fn xN -> `mk_app n` x1 ... xN'
+        where mk_app will be constructed:
+            - to perform a weakening by `n` on the spine tS that we didn't generate
+            - to stitch the spine x1 ... xN onto the end of original spine *)
     let var i = I.Term.(App (fake_loc, Var (fake_loc, i), [])) in
     let fn t = I.Term.(Fun (fake_loc, (fake_loc, "!"), t)) in
-    (* idea: count down from n as we traverse tS
-       At each step that we still have terms in the spine, move them to tS'.
-       When we run out of terms in the spine but there is remaining arity, generate abstractions.
-     *)
-    let rec go n tS tS' return = match n, tS with
-    | 0, [] -> return tS'
-    | n, [] -> go (n-1) [] (var (n-1) :: tS') (fun t -> fn (return t))
-    | 0, t :: tS -> go 0 tS (t :: tS') return
-    | n, t :: tS -> go (n-1) tS (t :: tS') return
+    let add_fn mk_fns = fun body -> fn (mk_fns body) in
+    let mk_app var_n tS_vars =
+        if var_n = 0
+        then I.Term.(App (fake_loc, tH, tS))
+        else
+            let tH' = I.Ren.(apply_head (shift var_n)) tH in
+            let tS' = I.Ren.(apply_spine (shift var_n)) tS in
+            I.Term.(App (fake_loc, tH', tS' @ tS_vars))
     in
-    go n tS [] (fun tS' -> I.Term.(App (fake_loc, tH, List.rev tS')))
+    let rec go n k tS tS_vars mk_fns = match n, tS with
+    (* run out of arity and spine: generate the eta-expanded application *)
+    | 0, [] -> mk_fns (mk_app k tS_vars)
+    (* spine but no arity: no eta-expansion possible (happens in higher-order situations) *)
+    | 0, t :: tS -> mk_app 0 []
+    (* arity but no spine: extend spine with a var and add an abstraction *)
+    | n, [] -> go (n-1) (k+1) [] (var k :: tS_vars) (add_fn mk_fns)
+    (* spine and arity: keep counting down *)
+    | n, t :: tS -> go (n-1) k tS [] mk_fns
+    in
+    go n 0 tS [] (fun body -> body)
 
 (* Closure-converts a term. *)
 let rec term : I.Term.t -> C.Term.t Cloco.t =
@@ -247,7 +262,7 @@ let rec term : I.Term.t -> C.Term.t Cloco.t =
         bind (term e) @@ fun e' ->
         bind (traverse case cases) @@ fun cases' ->
         pure (C.Term.Match (e', cases'))
-    | I.Term.App (_, tH, tS) as e ->
+    | I.Term.App (loc, tH, tS) as e ->
         bind (arity_of_head tH) @@ function
         | `unknown -> app tH tS
         | `known n ->
@@ -348,6 +363,8 @@ let rec program : ProgramInfo.t ->  I.Decl.program -> ProgramInfo.t * C.Decl.pro
                     |> ProgramInfo.add_new_ref d.name (kind, d.arity)
                     |> extend_refs_with_closure_bodies final_state.fns)
                     ds
+                (* also overwrite the definition for d.name to include an updated kind & arity
+                   according to eta-expansion that might have happened *)
             in
             let closure_body_decls = declare_closure_bodies final_state.fns in
             (info, closure_body_decls @ d :: ds)

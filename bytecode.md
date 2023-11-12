@@ -47,7 +47,7 @@ _objects_.
 
 Every heap object is made up of several values, each 64 bits wide.
 - first it has one value making up a header.
-    - 8 bits tag identifying what kind it is: CLO, CON
+    - 8 bits tag identifying what kind it is: CLO, CON, PAP
     - and every following octet represents a count or index according to the type of object
     - 8 bits count 1
     - 8 bits count 2
@@ -101,7 +101,7 @@ It is divided into two sections:
 This code is stored in the code segment.
 
 All the code of each function is stored sequentially in the code segment.
-Functions (either pure ones or closure _bodies_) are referred to by addresses in the code segment.
+Functions (either pure ones or closure _bodies_) are referred to by addresses to the code segment.
 
 # The heap
 
@@ -169,8 +169,8 @@ Closure conversion will turn _every_ (sequence of) `Fun` abstraction(s) into an 
 hoisted to a definition for `foo_closure_1`. However, this closure does not capture _any_
 environment variables. We call it a _degenerate closure._ Degenerate closures associated to
 top-level definitions get _unhoisted_ to define a _pure function_ rather than a _closure body_.
-(Static) calls to pure functions are optimized since we don't need to load/destroy an environment.
-(We avoid one indirection.)
+(Static) calls to pure functions are optimized since we don't need to load/destroy an environment,
+and we get to avoid one indirection thru the heap to get the function code address.
 
 ```evalbc
 load_e 0 ; load captured env var 0 (x)

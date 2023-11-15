@@ -31,4 +31,4 @@ module Internal = Synint
     and the construction of a pure function can be detected when the environment renaming of an
     `MkClo` is also empty.
  *)
-module Closed = Synclo
+module Low = Synlow

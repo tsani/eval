@@ -3,5 +3,5 @@ open BasicSyntax
 open Syntax
 
 module Internal = PrettyInternal
-module Closed = PrettyClosed
+module Low = PrettyLow
 module Bytecode = PrettyBytecode

@@ -1,7 +1,7 @@
 (* Compiles closed syntax into bytecode. *)
 
 open BasicSyntax
-open Syntax.Closed
+open Syntax.Low
 open Bytecode
 open RuntimeInfo
 
@@ -87,10 +87,6 @@ let call_mode_of_ref (r : ProgramInfo.ref_spec) =
     | `well_known -> fun n -> `closure n
     | `closure_body -> Util.invariant "[compile] calls to closure bodies are not possible"
 
-let literal = function
-    | IntLit n -> Text.single @@ Instruction.Push (`param, `integer n)
-    | _ -> Util.not_implemented ()
-
 let var (v : var) : 'l Text.builder Compiler.t = fun ctx s ->
     (s, match v with
         | `bound i -> Text.single @@ Instruction.Load (`param (Ren.lookup i ctx.Ctx.var_ren))
@@ -173,7 +169,8 @@ let rec pattern
 let rec term (t : Term.t) : 'l Text.builder Compiler.t =
     let open Compiler in
     match t with
-    | Term.Lit lit -> pure @@ literal lit
+    | Term.Lit (`addr n) | Term.Lit (`int n) ->
+        pure @@ Text.single @@ Instruction.Push (`param, `integer n)
     | Term.App (tH, tS) ->
         app 0 (List.rev tS) Text.empty tH
         (* Why in reverse? To uphold the calling convention, we need to emit the code to generate

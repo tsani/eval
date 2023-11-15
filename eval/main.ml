@@ -40,12 +40,12 @@ let main () =
                         *)
                     Debug.printf "@[<v>";
                     let info = ProgramInfo.collect program in
-                    let (info, closed_program) =
-                        Close.program info program
+                    let (info, low_program) =
+                        Lower.program info program
                     in
-                    fprintf ppf "Closure conversion succeeded.@.";
-                    fprintf ppf "  @[<v>%a@]@." P.Closed.print_program closed_program;
-                    let pgm = Compile.(program (Ctx.initial info) closed_program) in
+                    fprintf ppf "Lowering succeeded.@.";
+                    fprintf ppf "  @[<v>%a@]@." P.Low.print_program low_program;
+                    let pgm = Compile.(program (Ctx.initial info) low_program) in
                     fprintf ppf "Compilation succeeded.@.";
                     fprintf ppf "@[<v>%a@]@." P.Bytecode.print_program pgm;
                     let code = Link.program info pgm in

@@ -1,6 +1,6 @@
 open BasicSyntax
 
-(* In the closed syntax we distinguish between bound variables and environment variables. *)
+(* In the lowered syntax we distinguish between bound variables and environment variables. *)
 type var = [ `bound of index | `env of index ]
 
 type ctor_tag = int
@@ -35,12 +35,10 @@ module Term = struct
          - n is the count of arguments necessary to jump to the code pointer
          - theta is an _environment renaming_ which maps the EVars in `f` to variables in the
            enclosing scope. It is used at runtime to initialize the environment that gets
-           returned together with `f` by MkClo:
-               rho_e; rho_p |- MkClo(theta, n, f) !! Clo((rho_e, rho_p) . theta, n, f)
-           where `(rho_e, rho_p) . theta` is a composition of the environment pair with the
-           environment renaming. See note [env-comp] below.
-        *)
-        | Lit of literal
+           returned together with `f` by MkClo *)
+        | Lit of [ `int of Int64.t | `addr of Int64.t ]
+        (* All literals are represented as integers in the lowered syntax. We just distinguish
+           between boxed literals and unboxed literals. *)
         | App of head * spine
         | Let of rec_flag * t * t
         | Match of t * case list

@@ -1,6 +1,6 @@
 open Format
 open BasicSyntax
-open Syntax.Closed
+open Syntax.Low
 open Term
 
 open PrettyCommon
@@ -19,7 +19,10 @@ let print_head ppf = function
 
 let rec print_tm lvl ppf = function
     | MkClo (theta, n, f) -> fprintf ppf "mkclo(%a, %d, %s)" print_env_ren theta n f
-    | Lit l -> print_literal ppf l
+    | Lit l -> begin match l with
+        | `addr a -> fprintf ppf "%LdA" a
+        | `int n -> fprintf ppf "%LdI" n
+    end
     | App (tH, tS) -> print_app lvl ppf (tH, tS)
     | Let (rec_flag, e1, e2) ->
         fprintf ppf "%a@[<hv>@[<hv>@[<hv 2>let %a! =@ @[%a@]@]@ in@]@ @[%a@]@]%a"

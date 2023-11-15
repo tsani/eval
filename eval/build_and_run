@@ -1,9 +1,9 @@
 #!/bin/bash
 
 ocamlopt -g -o eval runtimeInfo.ml debug.ml oSet.mli oSet.ml result.ml util.ml loc.ml \
-    basicSyntax.ml scope.ml synint.ml synext.ml synclo.ml syntax.ml bytecode.ml \
-    prettyCommon.ml prettyBytecode.ml prettyInternal.ml prettyClosed.ml pretty.ml \
-    programInfo.ml compile.ml close.ml \
+    basicSyntax.ml scope.ml synint.ml synext.ml synlow.ml syntax.ml bytecode.ml \
+    prettyCommon.ml prettyBytecode.ml prettyInternal.ml prettyLow.ml pretty.ml \
+    programInfo.ml compile.ml lower.ml \
     scopecheck.ml parser.ml tMVar.ml unify.ml typecheck.ml eval.ml \
     link.ml interpret.ml \
     main.ml &&

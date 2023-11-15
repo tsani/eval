@@ -63,8 +63,9 @@ module Ctx = struct
     }
 end
 
-module Cloco = struct
-    (* Cloco monad. *)
+(** Originally called "Cloco" for closure conversion. Now this is responsible for the "lowering
+    conversion", so it gets to be called the Loco monad. *)
+module Loco = struct
     type 'a t = Ctx.t -> State.t -> State.t * 'a
 
     let bind (m : 'a t) (k : 'a -> 'b t) : 'b t =
@@ -139,8 +140,8 @@ end
 
 (** Inserts an index into the current environment renaming.
     Returns the index _into the renaming_ of the given index. *)
-let er_insert (i : index) : index Cloco.t =
-    let open Cloco in
+let er_insert (i : index) : index Loco.t =
+    let open Loco in
     bind get_env_ren @@ fun theta ->
     let (theta', j) = ER.insert i theta in
     bind (put_env_ren theta') @@ fun _ ->
@@ -148,8 +149,8 @@ let er_insert (i : index) : index Cloco.t =
 
 (** Closure-converts the index of a variable according to the active watermark, extending the
     current environment renaming in case the index refers to an environment variable. *)
-let index (i : index) : L.var Cloco.t =
-    let open Cloco in
+let index (i : index) : L.var Loco.t =
+    let open Loco in
     bind get_watermark @@ fun w ->
     if i < w then pure (`bound i) else
     bind (er_insert (i - w)) @@ fun j ->
@@ -157,13 +158,13 @@ let index (i : index) : L.var Cloco.t =
 
 (** Closure-converts an environment renaming. Each index appearing in the given ER is reindexed
     according to the current watermark, updating the current (raw) environment renaming. *)
-let env_ren (theta : RawER.t) : ER.t Cloco.t = Cloco.traverse index theta
+let env_ren (theta : RawER.t) : ER.t Loco.t = Loco.traverse index theta
 
 (** Runs the given action with an empty environment renaming, reindexing the resulting environment
     renaming in the presence of the outer one after.
     Returns the reindexed environment renaming obtained from running the inner computation. *)
-let er_pushed (m : 'a Cloco.t) : (ER.t * 'a) Cloco.t =
-    let open Cloco in
+let er_pushed (m : 'a Loco.t) : (ER.t * 'a) Loco.t =
+    let open Loco in
     bind get_env_ren @@ fun theta -> (* save outer ER *)
     bind (put_env_ren ER.empty) @@ fun _ -> (* flush active ER *)
     bind m @@ fun x -> (* run inner computation *)
@@ -174,8 +175,8 @@ let er_pushed (m : 'a Cloco.t) : (ER.t * 'a) Cloco.t =
 
 (* Closure-converts the head of an application according to a watermark, extending the given
    environment renaming in the case for a variable. *)
-let head : I.Term.head -> L.Term.head Cloco.t =
-    let open Cloco in function
+let head : I.Term.head -> L.Term.head Loco.t =
+    let open Loco in function
     | I.Term.Var (_, i) ->
         bind (index i) @@ fun x -> pure (L.Term.Var x)
     | I.Term.Const (_, c) -> pure (L.Term.Const c)
@@ -183,10 +184,10 @@ let head : I.Term.head -> L.Term.head Cloco.t =
     | I.Term.Prim (_, p) -> pure (L.Term.Prim p)
 
 let bump_of_rec_flag = function
-    | Rec -> Cloco.bumped_watermark 1
+    | Rec -> Loco.bumped_watermark 1
     | NonRec -> fun x -> x
 
-let rec pattern : I.Term.pattern -> L.Term.pattern Cloco.t = let open Cloco in function
+let rec pattern : I.Term.pattern -> L.Term.pattern Loco.t = let open Loco in function
     | I.Term.LiteralPattern (_, l) -> pure @@ L.Term.LiteralPattern l
     | I.Term.WildcardPattern _ -> pure @@ L.Term.WildcardPattern
     | I.Term.VariablePattern (_, _) -> pure @@ L.Term.VariablePattern
@@ -229,8 +230,8 @@ let eta_expand tH n tS =
     go n 0 tS [] (fun body -> body)
 
 (* Closure-converts a term. *)
-let rec term : I.Term.t -> L.Term.t Cloco.t =
-    let open Cloco in
+let rec term : I.Term.t -> L.Term.t Loco.t =
+    let open Loco in
     (* Closure-convert a term that is KNOWN to be a function. *)
     let func e =
         let xs, e = I.Term.collapse_funs e in
@@ -270,25 +271,25 @@ let rec term : I.Term.t -> L.Term.t Cloco.t =
             | I.Term.Fun _ as e' -> func e'
             | I.Term.App (_, tH, tS) -> app tH tS
 
-and case : I.Term.case -> L.Term.case Cloco.t =
-    let open Cloco in function
+and case : I.Term.case -> L.Term.case Loco.t =
+    let open Loco in function
     | I.Term.Case (_, p, e) ->
         let n = I.Term.count_pattern_vars p in
         bind (pattern p) @@ fun p ->
         bind (bumped_watermark n @@ term e) @@ fun e ->
         pure (L.Term.Case (p, n, e))
 
-and spine (tS : I.Term.spine) : L.Term.spine Cloco.t = Cloco.traverse term tS
+and spine (tS : I.Term.spine) : L.Term.spine Loco.t = Loco.traverse term tS
 
 let is_static_function : I.Term.t -> bool =
     function
     | I.Term.Fun _ -> true
     | _ -> false
 
-let tm_decl : I.Term.t I.Decl.tm -> (ProgramInfo.decl_kind * L.Decl.tm) Cloco.t =
+let tm_decl : I.Term.t I.Decl.tm -> (ProgramInfo.decl_kind * L.Decl.tm) Loco.t =
     let var i = L.Term.(App (Var (`bound i), [])) in
     let rec gen_spine n = if n = 0 then [] else var (n-1) :: gen_spine (n-1) in
-    let open Cloco in
+    let open Loco in
     function
     | I.Decl.({ body = None }) -> failwith "todo"
     | I.Decl.({ name; rec_flag; body = Some body }) ->
@@ -343,7 +344,7 @@ let declare_closure_bodies (clo_bodies : clo_body_spec CloBodyMap.t) : L.Decl.tm
     |> List.of_seq
 
 let rec program : ProgramInfo.t ->  I.Decl.program -> ProgramInfo.t * L.Decl.program =
-    let open Cloco in fun info -> function
+    let open Loco in fun info -> function
     | [] -> (info, [])
     | d :: ds -> match d with
         | I.Decl.(TpDecl _) -> program info ds

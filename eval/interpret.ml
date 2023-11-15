@@ -118,82 +118,85 @@ module HeapObject = struct
     type con_spec = {
         tag : int;
         arity : value_count;
-        fields : value list;
     }
 
     type clo_spec = {
         env_size : value_count;
         arity : value_count;
         body : code_addr;
-        env : value list;
     }
 
     type pap_spec = {
         held : value_count;
         missing : value_count;
         clo : heap_addr;
-        fields : value list;
     }
 
     type arr_spec = {
         capacity : value_count;
         length: byte_count;
-        data : char Array.t;
     }
 
-    type t =
+    type blob = value Array.t
+
+    type spec =
         | Con of con_spec
         | Clo of clo_spec
         | Pap of pap_spec
         | Arr of arr_spec
 
-    (** Writes a heap object to a heap at the given address. *)
-    let encode_at (pos : heap_addr) (heap : heap) (obj : t) : unit =
-        (** Converts the heap object to a list of values. *)
-        let to_value_list = function
-            | Con { tag; arity; fields } ->
-                Header.(encode Kind.CON [tag; arity]) :: fields
-            | Clo { env_size; arity; body; env } ->
-                Header.(encode Kind.CLO [env_size; arity]) :: body :: env
-            | Pap { held; missing; clo; fields } ->
-                Header.(encode Kind.PAP [held; missing]) :: clo :: fields
-            | Arr { capacity; length; data } ->
-                Header.(encode Kind.ARR [capacity; length]) :: (Util.not_implemented ())
-        in
+    type obj = spec * blob
 
+    (** According to the encoding of heap objects, a CLO object is laid out as
+        <header> <body code address> <env var 1> <env var 2> ... <env var N>
+        So adding 2 to the address of a closure object gives a pointer to the environment! *)
+    let closure_env_offset : Int64.t = 2L
+
+    (** Writes a heap object to a heap at the given address. *)
+    let encode_at (pos : heap_addr) (heap : heap) (obj : obj) : unit =
+        (** Converts the heap object to a list of values. *)
+        let to_value_list (spec, blob) = match spec with
+            | Con { tag; arity } ->
+                Header.(encode Kind.CON [tag; arity]) :: Array.to_list blob
+            | Clo { env_size; arity; body } ->
+                Header.(encode Kind.CLO [env_size; arity]) :: body :: Array.to_list blob
+            | Pap { held; missing; clo } ->
+                Header.(encode Kind.PAP [held; missing]) :: clo :: Array.to_list blob
+            | Arr { capacity; length } ->
+                Header.(encode Kind.ARR [capacity; length]) :: Array.to_list blob
+        in
         let pos = Int64.to_int pos in
         List.iteri (fun i v -> heap.(pos + i) <- v) (to_value_list obj)
 
+    (** `load_blob pos heap spec` loads the array of values associated to the object with header
+        `spec` located at position `pos` in `heap`. *)
+    let load_blob (heap : heap) (pos : heap_addr) : spec -> blob =
+        let pos = Int64.to_int pos in
+        function
+        | Con { arity } -> Array.init arity (fun i -> heap.(pos + 1 + i))
+        | Clo { env_size } -> Array.init env_size (fun i -> heap.(pos + 2 + i))
+        | Pap { held } -> Array.init held (fun i -> heap.(pos + 2 + i))
+        | Arr { capacity } -> Array.init capacity (fun i -> heap.(pos + 1 + i))
+
     (** Decodes a heap object from a heap at the given address. *)
-    let decode_at (pos : heap_addr) (heap : heap) : t =
+    let load_spec (heap : heap) (pos : heap_addr) : spec =
         let pos = Int64.to_int pos in
         match Header.decode heap.(pos) with
-        | CON, tag :: arity :: _ ->
-            Con {
-                tag;
-                arity;
-                fields = List.init arity (fun i -> heap.(pos + i + 1));
-            }
-        | CLO, env_size :: arity :: _ ->
-            Clo {
-                env_size;
-                arity;
-                body = heap.(pos + 1);
-                env = List.init env_size (fun i -> heap.(pos + i + 2));
-            }
-        | PAP, held :: missing :: _ ->
-            Pap {
-                held;
-                missing;
-                clo = heap.(pos + 1);
-                fields = List.init held (fun i -> heap.(pos + i + 2));
-            }
+        | CON, tag :: arity :: _ -> Con { tag; arity }
+        | CLO, env_size :: arity :: _ -> Clo { env_size; arity; body = heap.(pos + 1) }
+        | PAP, held :: missing :: _ -> Pap { held; missing; clo = heap.(pos + 1) }
+        | ARR, capacity :: length :: _ -> Arr { capacity; length }
+
+    let load_constructor_field (heap : heap) (pos : heap_addr) (n : int) : value =
+        let pos = Int64.to_int pos in
+        heap.(pos + 1 + n)
 
     (** Calculates the size (as a count of values) of the given heap object. *)
-    let size : t -> int = function
+    let size : spec -> int = function
         | Con { arity } -> 1 + arity
         | Clo { env_size } -> 2 + env_size
         | Pap { held; missing } -> 2 + held
+        | Arr { capacity } -> 1 + capacity
         (* Everything gets a +1 for the header, then Clo and Pap get an extra +1 since they hold an
            address in addition to their fields. *)
 
@@ -307,16 +310,27 @@ module Interpreter = struct
     let deref (addr : heap_addr) (offset : int) = fun ctx s ->
         (s, s.State.heap.(Int64.to_int addr + offset))
 
-    let load_heap_object (pos : heap_addr) : HeapObject.t t = fun ctx s ->
-        (s, HeapObject.decode_at pos s.State.heap)
+    let load_heap_object (pos : heap_addr) : HeapObject.spec t = fun ctx s ->
+        (s, HeapObject.load_spec s.State.heap pos)
+
+    let load_associated_blob (pos : heap_addr) (spec : HeapObject.spec) : HeapObject.blob t =
+        fun ctx s -> (s, HeapObject.load_blob s.State.heap pos spec)
+
+    let load_full_heap_object (pos : heap_addr) : HeapObject.obj t = fun ctx s ->
+        let spec = HeapObject.load_spec s.State.heap pos in
+        let blob = HeapObject.load_blob s.State.heap pos spec in
+        (s, (spec, blob))
+
+    let load_constructor_field (pos : heap_addr) (n : int) : value t = fun ctx s ->
+        (s, HeapObject.load_constructor_field s.State.heap pos n)
 
     (** Allocates space on the heap for the object, writes it to the heap, and returns the
         address of the object. *)
-    let store_heap_object (obj : HeapObject.t) : heap_addr t = fun ctx s ->
+    let store_heap_object ((spec, blob) : HeapObject.obj) : heap_addr t = fun ctx s ->
         let open State in
         let addr = s.next_free in
-        HeapObject.encode_at addr s.State.heap obj;
-        ( { s with next_free = Int64.add addr (Int64.of_int @@ HeapObject.size obj) }
+        HeapObject.encode_at addr s.State.heap (spec, blob);
+        ( { s with next_free = Int64.add addr (Int64.of_int @@ HeapObject.size spec) }
         , addr
         )
 end
@@ -338,7 +352,7 @@ module Exec = struct
             bind get @@ fun s ->
             bind (push `return s.ep) @@ fun _ ->
             bind (push `return s.pc) @@ fun _ ->
-            bind (set_ep (Int64.add heap_addr 2L)) @@ fun _ ->
+            bind (set_ep (Int64.add heap_addr HeapObject.closure_env_offset)) @@ fun _ ->
             bind (deref heap_addr 1) @@ fun clo_body_addr ->
             bind (jump_abs clo_body_addr) @@ fun _ ->
             pure `running
@@ -352,15 +366,15 @@ module Exec = struct
                 let arg_count = Int64.to_int arg_count in
                 (* otherwise there are more arguments to apply *)
                 bind (pop `param 0) @@ fun obj_addr ->
-                bind (load_heap_object obj_addr) @@ let open HeapObject in function
+                bind (load_heap_object obj_addr) @@
+                let open HeapObject in function
                 | Clo { arity } when arg_count < arity ->
                     bind (pops arg_count `param 0) @@ fun args ->
-                    bind (store_heap_object @@ Pap {
-                        held = arg_count;
-                        missing = arity - arg_count;
-                        clo = obj_addr;
-                        fields = args;
-                    }) @@ fun pap_addr ->
+                    bind (store_heap_object
+                        ( Pap { held = arg_count; missing = arity - arg_count; clo = obj_addr; }
+                        , Array.of_list args
+                        )
+                    ) @@ fun pap_addr ->
                     bind (push `param pap_addr) @@ fun _ ->
                     pure `running
                 | Clo { arity; body } -> (* then arg_count is >= arity *)
@@ -368,24 +382,26 @@ module Exec = struct
                     bind (push `return (Int64.of_int @@ arg_count - arity)) @@ fun _ ->
                     bind (push `return s.ep) @@ fun _ ->
                     bind (push `return @@ Int64.sub s.pc 1L) @@ fun _ ->
-                    bind (set_ep (Int64.add obj_addr 2L)) @@ fun _ ->
+                    bind (set_ep (Int64.add obj_addr HeapObject.closure_env_offset)) @@ fun _ ->
                     bind (jump_abs body) @@ fun _ ->
                     pure `running
-                | Pap { held; missing; clo; fields } when arg_count < missing ->
+                | Pap { held; missing; clo } as spec when arg_count < missing ->
                     bind (pops arg_count `param 0) @@ fun args ->
-                    bind (store_heap_object @@ Pap {
-                        held = held + arg_count;
-                        missing = missing - arg_count;
-                        clo;
-                        fields = fields @ args;
-                    }) @@ fun pap_addr ->
+                    bind (load_associated_blob obj_addr spec) @@ fun blob ->
+                    bind (store_heap_object
+                        ( Pap { held = held + arg_count; missing = missing - arg_count; clo }
+                        , Array.(append blob (of_list args))
+                        )
+                    ) @@ fun pap_addr ->
                     bind (push `param pap_addr) @@ fun _ ->
                     pure `running
-                | Pap { held; missing; clo; fields } ->
+                | Pap { missing; clo } as spec ->
                     (* there are enough values to call the function now, so we load its saved arguments
                        onto the stack. They were saved _in order_, so we have to load them in reverse
-                       to arrange that the very first argument ends up on the top of the stack. *)
-                    bind (List.rev fields |> iter (fun v -> push `param v)) @@ fun _ ->
+                       to arrange that the first argument ends up on the top of the stack. *)
+                    bind (load_associated_blob obj_addr spec) @@ fun blob ->
+                    bind (blob |> Array.to_list |> List.rev |> iter (fun v -> push `param v)) @@
+                    fun _ ->
                     bind get @@ fun s ->
                     bind (push `return (Int64.of_int @@ missing - arg_count)) @@ fun _ ->
                     bind (push `return s.ep) @@ fun _ ->
@@ -415,14 +431,14 @@ module Exec = struct
 
     let mkclo (env_size, arity) : exec =
         bind (pops (env_size + 1) `param 0) @@ fun (body :: env) ->
-        let obj = HeapObject.(Clo { env_size; arity; body; env }) in
+        let obj = (HeapObject.(Clo { env_size; arity; body }), Array.of_list env) in
         bind (store_heap_object obj) @@ fun addr ->
         bind (push `param addr) @@ fun _ ->
         pure `running
 
     let const (tag, arity) : exec =
         bind (pops arity `param 0) @@ fun fields ->
-        let obj = HeapObject.(Con { tag; arity; fields }) in
+        let obj = (HeapObject.(Con { tag; arity }), Array.of_list fields) in
         bind (store_heap_object obj) @@ fun addr ->
         bind (push `param addr) @@ fun _ ->
         pure `running
@@ -446,14 +462,13 @@ module Exec = struct
         | `constructor ->
             bind (pop `param 0) @@ fun addr ->
             bind (load_heap_object addr) @@ fun obj ->
-            let HeapObject.({ tag; fields }) = HeapObject.as_con obj in
+            let HeapObject.({ tag }) = HeapObject.as_con obj in
             bind (push `param @@ Int64.of_int tag) @@ fun _ ->
             pure `running
         | `field n ->
             bind (pop `param 0) @@ fun addr ->
-            bind (load_heap_object addr) @@ fun obj ->
-            let HeapObject.({ tag; fields }) = HeapObject.as_con obj in
-            bind (push `param @@ List.nth fields n) @@ fun _ ->
+            bind (load_constructor_field addr n) @@ fun v ->
+            bind (push `param v) @@ fun _ ->
             pure `running
 
     let store name : exec =
@@ -531,10 +546,11 @@ module Exec = struct
         | Instruction.Label _ -> Util.invariant "[interpret] labels are already interpreted"
         | Instruction.Halt status -> pure status
 
-    let fetch_decode_execute = bind (next_instruction) dispatch
+    (** Loads the next instruction, updating the PC, and dispatches it. *)
+    let step = bind next_instruction dispatch
 end
 
 let rec program ctx s =
-    match Exec.fetch_decode_execute ctx s with
+    match Exec.step ctx s with
     | (s', `running) -> program ctx s'
     | (s', status) -> (s', status)

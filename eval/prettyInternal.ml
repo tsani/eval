@@ -55,7 +55,7 @@ let rec print_ctx (ppf : formatter) (ctx : Ctx.t) : unit =
 let rec print_tm lvl scope (ppf : formatter) : Term.t -> unit = function
   | Lit (_, lit) -> fprintf ppf "%a" print_literal lit
   | Fun (_, (_, x), e) ->
-    let (xs, e) = collapse_funs e in
+    let (xs, e, _) = collapse_funs e in
     fprintf ppf "%a@[<hv 2>fun %a ->@ %a@]%a"
       lparen (lvl > 0)
       (pp_print_list ~pp_sep: (fun ppf _ -> fprintf ppf " ") pp_print_string) (x :: xs)

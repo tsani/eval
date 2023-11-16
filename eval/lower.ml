@@ -101,7 +101,7 @@ module Loco = struct
     (** Deletes a function from the current mapping, returning its description. *)
     let remove_function (f : tm_name) : clo_body_spec t = fun ctx s ->
         match CloBodyMap.find_opt f s.fns with
-        | None -> Util.invariant "[close] any function to remove was already added"
+        | None -> Util.invariant "[lower] any function to remove was already added"
         | Some d -> ({ s with fns = CloBodyMap.remove f s.fns }, d)
 
     (** Gets the current watermark. *)
@@ -229,13 +229,14 @@ let eta_expand tH n tS =
     in
     go n 0 tS [] (fun body -> body)
 
-(* Closure-converts a term. *)
+(* Lowers a term. *)
 let rec term : I.Term.t -> L.Term.t Loco.t =
     let open Loco in
     (* Closure-convert a term that is KNOWN to be a function. *)
     let func e =
-        let xs, e = I.Term.collapse_funs e in
-        let w' = List.length xs in (* the watermark to use within the function body *)
+        let xs, e, w' = I.Term.collapse_funs e in
+        if w' = 0 then Util.invariant "[lower] [func] must be applied to a function";
+        (* w': the count of funs is the watermark to use within the function body *)
         bind (er_pushed @@ with_watermark w' @@ term e) @@ fun (theta, e') ->
         bind (add_function { arity = w'; body = e' }) @@ fun f ->
         pure @@ L.Term.MkClo (theta, w', f)
@@ -300,7 +301,7 @@ let tm_decl : I.Term.t I.Decl.tm -> (ProgramInfo.decl_kind * L.Decl.tm) Loco.t =
         in
         bind (with_ref_arity name kind 0 @@ bump_of_rec_flag rec_flag @@ term body) @@ function
         | L.Term.MkClo (theta, _, _) when not (ER.is_empty theta) ->
-            Util.invariant "[close] top-level closure is trivial"
+            Util.invariant "[lower] top-level closure is trivial"
         | L.Term.MkClo (theta, n, f) ->
             bind (remove_function f) @@ fun { body } ->
             pure @@ (

@@ -128,7 +128,7 @@ let eval_prim s (prim, vS) : Value.t =
 let rec eval (s : State.t) (env : Env.t) : Term.t -> Value.t = function
   | Lit (_, lit) -> Value.Lit lit
   | Fun _ as e_f ->
-    let (xs, e) = collapse_funs e_f in
+    let (xs, e, _) = collapse_funs e_f in
     let v = Value.Clo (env, xs, e) in
     debug_print s "@[<hv 2>Construct closure@ %a@]@," (P.print_value 0) v;
     v

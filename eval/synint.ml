@@ -150,12 +150,13 @@ module Term = struct
     | VariablePattern (loc, _) -> loc
     | WildcardPattern loc -> loc
 
-  (** Decomposes nested functions into a sequence of names and the innermost body. *)
-  let rec collapse_funs : t -> var_name list * t = function
+  (** Decomposes nested functions into a sequence of names and the innermost body.
+      Counts also the number of funs that were encountered. *)
+  let rec collapse_funs : t -> var_name list * t * int = function
     | Fun (_, (_, x), e) ->
-      let (xs, e) = collapse_funs e in
-      (x :: xs, e)
-    | e -> ([], e)
+      let (xs, e, n) = collapse_funs e in
+      (x :: xs, e, n + 1)
+    | e -> ([], e, 0)
 end
 
 module Ren = struct

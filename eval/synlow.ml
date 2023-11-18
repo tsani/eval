@@ -15,6 +15,13 @@ module EnvRen = struct
     let is_empty (r : t) : bool = r = OSet.empty
 end
 
+module Constant = struct
+    type t =
+        | CConst of ctor_name * t list
+        | CInt of Int64.t
+        | CString of string
+end
+
 module Term = struct
     type pattern =
         | ConstPattern of ctor_tag * pattern list

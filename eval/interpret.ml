@@ -430,11 +430,13 @@ module Exec = struct
             pure `running
 
     let mkclo (env_size, arity) : exec =
-        bind (pops (env_size + 1) `param 0) @@ fun (body :: env) ->
-        let obj = (HeapObject.(Clo { env_size; arity; body }), Array.of_list env) in
-        bind (store_heap_object obj) @@ fun addr ->
-        bind (push `param addr) @@ fun _ ->
-        pure `running
+        bind (pops (env_size + 1) `param 0) @@ function
+        | [] -> Util.invariant "[interpret] [mkclo] pops at least 1 item"
+        | (body :: env) ->
+            let obj = (HeapObject.(Clo { env_size; arity; body }), Array.of_list env) in
+            bind (store_heap_object obj) @@ fun addr ->
+            bind (push `param addr) @@ fun _ ->
+            pure `running
 
     let const (tag, arity) : exec =
         bind (pops arity `param 0) @@ fun fields ->
@@ -545,6 +547,7 @@ module Exec = struct
         | Instruction.Jump (jump_mode, offset) -> jump (jump_mode, offset)
         | Instruction.Label _ -> Util.invariant "[interpret] labels are already interpreted"
         | Instruction.Halt status -> pure status
+        | Instruction.MkPap _ -> Util.not_implemented ()
 
     (** Loads the next instruction, updating the PC, and dispatches it. *)
     let step = bind next_instruction dispatch

@@ -1,0 +1,27 @@
+(lang dune 3.7)
+
+(name eval)
+
+(generate_opam_files true)
+
+(source
+ (github tsani/eval))
+
+(authors "Jacob Thomas Errington")
+
+(maintainers "Jacob Thomas Errington")
+
+(license LICENSE)
+
+(documentation https://github.com/tsani/eval)
+
+(package
+ (name eval)
+ (synopsis "A bytecode compiler for an ML-like language")
+ (description "A hobby compiler project to explore topics such as typechecking, unification,
+              closure conversion, bytecode generation, and efficient bytecode interpretation.")
+ (depends ocaml dune)
+ (tags
+  (topics interpreter compiler strongly-typed ml)))
+
+; See the complete stanza docs at https://dune.readthedocs.io/en/stable/dune-files.html#dune-project

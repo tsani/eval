@@ -100,8 +100,8 @@ module Decl = struct
     | TmDecl of tm
 
   let loc_of_decl = function
-    | TpDecl { loc } -> loc
-    | TmDecl { loc } -> loc
+    | TpDecl { loc; _ } -> loc
+    | TmDecl { loc; _ } -> loc
 
   (** A program is a sequence of declarations. *)
   type program = t list

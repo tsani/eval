@@ -36,7 +36,7 @@ let rec print_tm lvl ppf = function
             rparen (lvl > 0)
 
 and print_case ppf : case -> unit = function
-    | Case (pat, n, body) ->
+    | Case (pat, _n, body) ->
         fprintf ppf "@[<hv 2>| %a ->@ %a@]"
             (print_pattern 0) pat
             (print_tm 1) body

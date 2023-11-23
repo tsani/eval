@@ -1,3 +1,0 @@
-#!/bin/bash
-
-ag -C 2 'TODO|XXX' *.ml

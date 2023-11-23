@@ -58,5 +58,5 @@ end
 
 type span = Span.t
 
-let print ppf { line; column; filename } =
+let print ppf { line; column; filename; offset = _ } =
   Format.fprintf ppf "%s:%d:%d" filename line column

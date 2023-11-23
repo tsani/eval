@@ -7,10 +7,16 @@ open Bytecode
 open Instruction
 
 let resolve_labels (body : int Instruction.t list) : instr list =
-    (** Removes all Label nodes from the given body while computing a map associating label numbers
+    (* Removes all Label nodes from the given body while computing a map associating label numbers
         to indices in the body that the label refers to. *)
     let rec unlabel (map : offset LabelMap.t) (i : int) (body : int Instruction.t list)
             : offset LabelMap.t * int Instruction.t list =
+        List.fold_left
+            begin fun (map, i, next) -> function
+            | Label l -> (LabelMap.add l i map, i + 1, next)
+            | instr -> (map, i + 1, fun x -> next (instr :: x)
+            end
+            (LabelMap.empty, i, fun x -> x)
         match body with
         | [] -> (map, [])
         | Label l :: rest -> unlabel (LabelMap.add l i map) i rest

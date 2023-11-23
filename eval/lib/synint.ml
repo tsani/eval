@@ -266,15 +266,17 @@ module Decl = struct
   *)
   type tp = {
     name : tp_name;
+    (** The name of the type. *)
 
+    tvar_binders : tvar_name list;
     (** List of type parameter names bound in this type.
      * All names are unique in this list. *)
-    tvar_binders : tvar_name list;
 
+    constructors : ctor list;
     (** The constructors of this datatype.
      * By parser invariant, the owner_name of every ctor is the name as `name`
      * above. *)
-    constructors : ctor list;
+
     loc : Loc.span;
   }
 
@@ -284,8 +286,8 @@ module Decl = struct
   type 'a decl = 'a t
 
   let loc_of_decl = function
-    | TpDecl { loc } -> loc
-    | TmDecl { loc } -> loc
+      | TpDecl { loc; _ } -> loc
+      | TmDecl { loc; _ } -> loc
 
   (* A program is what is submitted to the evaluator.
     The evaluator then produces a signature in which the term declarations

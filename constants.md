@@ -33,3 +33,36 @@ node should also be constant. If it is, then we continue building a tentative co
 that up the chain, deferring to our caller to decide when to actually materialize the constant in
 the table; else, we materialize the constants resulting from rec calls, throwing away their lowered
 syntax and instead generating `L.Term.Constant tag` for tags generated for each.
+
+Ok, here's my new idea that reconciles strings and constructors. At the end of the day, we're going
+to need to generate heap object representations at compile-time (probably during linking). So why
+am I using a _direct_ form of recursion in the definition of `constant`? Instead, I can make it
+indirect thru a 'tag' which is used as a key into a map.
+
+```
+    type t =
+        | Const of ctor_name * ref list
+        | String of string
+    and ref = [ `unboxed of Int64.t | `boxed of tag ]
+```
+
+Then, in the lowered syntax, we have a constructor `Constant : ref -> term` which holds either an
+unboxed integer constant or a 'boxed' Large Constant (string or constructor).
+
+Compilation of such a `ref` is simply to emit a Push instruction to get either the literal integer
+on the stack or the heap address of the Large Constant.
+
+This means that those heap addresses have to be known statically. So here's what's gonna happen:
+- lowering will generate a global table of constants associated with tags
+- linking will receive this table, and will be able to generate an initial heap. All tags will have
+  to be resolved to genuine heap addresses.
+- linking only happens _after_ compilation! So compilation has to emit an address before the
+  address is actually known.
+- we already had that problem when compiling jumps!
+    - For jumps, we introduced 'synthetic' bytecode instructions Label and SetLabel
+    - Linking eliminated those instructions from the bytecode as it resolved the (code) addresses
+      of the bytecode instructions.
+- we can introduce a new synthetic instruction `Load_constant` to holds a tag
+- linking generates the initial heap before eliminating synthetic instructions, so all constant
+  tags become associated with a genuine heap address
+- during linking, all Load_constant instructions become replaced with a Push of the known address

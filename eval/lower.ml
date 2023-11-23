@@ -67,31 +67,6 @@ module CloBody = struct
     let to_seq { map } = Map.to_seq map
 end
 
-module Constant = struct
-    type key = int
-
-    type spec = {
-        constant : L.Constant.t;
-    }
-
-    module Map = Util.IntMap
-
-    type map = {
-        map : spec Map.t;
-        next : key;
-    }
-
-    let empty_map = {
-        map = Map.empty;
-        next = 0;
-    }
-
-    let add c m =
-        let index = m.next in
-        let new_map = { map = Map.add m.next c m.map; next = m.next + 1 } in
-        (index, new_map)
-end
-
 (* Lowering is stateful since its component transformations are as well:
     - Closure conversion requires state:
         - as we encounter variables, we update the current environment renaming to include them
@@ -103,13 +78,13 @@ end
 module State = struct
     type t = {
         fns : CloBody.map;
-        cts : Constant.map;
+        cts : L.Constant.map;
         theta : RawER.t;
     }
 
     let initial = {
         fns = CloBody.empty_map;
-        cts = Constant.empty_map;
+        cts = L.Constant.empty_map;
         theta = ER.empty;
     }
 end
@@ -157,6 +132,11 @@ module Loco = struct
         match CloBody.lookup f s.fns with
         | None -> Util.invariant "[lower] any function to remove was already added"
         | Some d -> ({ s with fns = CloBody.remove f s.fns }, d)
+
+    (** Adds a constant to the constant table, returning a fresh tag for it. *)
+    let add_constant (c : L.Constant.spec) : L.Constant.tag t = fun ctx s ->
+        let tag, cts = L.Constant.add c s.cts in
+        ({ s with cts }, tag)
 
     (** Gets the current watermark. *)
     let get_watermark : watermark t = fun ctx s -> (s, ctx.watermark)
@@ -295,35 +275,56 @@ let is_static_function : I.Term.t -> bool =
     | I.Term.Fun _ -> true
     | _ -> false
 
-(* Lowers a term. *)
-let rec term : I.Term.t -> L.Term.t Loco.t =
+let literal : literal -> L.Constant.ref Loco.t = let open Loco in function
+    | IntLit n -> pure @@ `unboxed n
+    | CharLit c ->
+        let n = Int64.of_int @@ Char.code c in
+        pure @@ `unboxed n
+    | BoolLit b ->
+        let n = if b then 1L else 0L in
+        pure @@ `unboxed n
+    | StringLit s ->
+        bind (Loco.add_constant { constant = L.Constant.String s }) @@ fun tag ->
+        pure @@ `boxed tag
+
+type 'a or_constant = [ `dyn of 'a | `constant of L.Constant.ref ]
+
+let to_term : L.Term.t or_constant -> L.Term.t = function
+    | `dyn t -> t
+    | `constant r -> L.Term.Constant r
+
+(* Lowers a term while also converting it to a constant if possible. *)
+let rec term : I.Term.t -> L.Term.t or_constant Loco.t =
     let open Loco in
     (* Lower a term that is KNOWN to be a function. *)
-    let func e =
+    let func e : L.Term.t or_constant Loco.t =
         let xs, e, w' = I.Term.collapse_funs e in
         if w' = 0 then Util.invariant "[lower] [func] must be applied to a function";
         (* w': the count of funs is the watermark to use within the function body *)
         bind (er_pushed @@ with_watermark w' @@ term e) @@ fun (theta, e') ->
-        bind (add_function { arity = w'; body = e' }) @@ fun f ->
-        pure @@ L.Term.MkClo (theta, w', f)
+        bind (add_function { arity = w'; body = to_term e' }) @@ fun f ->
+        pure @@ `dyn (L.Term.MkClo (theta, w', f))
     in
     (* Lower an application. *)
     let app tH tS =
         bind (head tH) @@ fun tH ->
         bind (spine tS) @@ fun tS ->
-        pure (L.Term.App (tH, tS))
+        match tH with
+        | L.Term.Const c -> failwith "todo" (* check if all tS are constant to form a bigger constant *)
+        | _ -> pure @@ `dyn (L.Term.App (tH, List.map to_term tS))
     in
     function
-    | I.Term.Lit (_, IntLit n) -> pure @@ L.Term.Lit (`int n)
+    | I.Term.Lit (_, lit) ->
+        bind (literal lit) @@ fun ct -> pure @@ `constant ct
     | I.Term.Fun _ as e -> func e
     | I.Term.Let (_, rec_flag, (_, x), e1, e2) ->
         bind (bump_of_rec_flag rec_flag @@ term e1) @@ fun e1' ->
         bind (bumped_watermark 1 @@ term e2) @@ fun e2' ->
-        pure @@ L.Term.Let (rec_flag, e1', e2')
+        pure @@ `dyn (L.Term.Let (rec_flag, to_term e1', to_term e2'))
     | I.Term.Match (_, e, cases) ->
         bind (term e) @@ fun e' ->
         bind (traverse case cases) @@ fun cases' ->
-        pure (L.Term.Match (e', cases'))
+        pure @@ `dyn (L.Term.Match (to_term e', cases'))
     | I.Term.App (loc, tH, tS) as e ->
         bind (arity_of_head tH) @@ function
         | `unknown -> app tH tS
@@ -338,9 +339,9 @@ and case : I.Term.case -> L.Term.case Loco.t =
         let n = I.Term.count_pattern_vars p in
         bind (pattern p) @@ fun p ->
         bind (bumped_watermark n @@ term e) @@ fun e ->
-        pure (L.Term.Case (p, n, e))
+        pure (L.Term.Case (p, n, to_term e))
 
-and spine (tS : I.Term.spine) : L.Term.spine Loco.t = Loco.traverse term tS
+and spine (tS : I.Term.spine) : L.Term.t or_constant list Loco.t = Loco.traverse term tS
 
 let tm_decl : I.Term.t I.Decl.tm -> (ProgramInfo.decl_kind * L.Decl.tm) Loco.t =
     let var i = L.Term.(App (Var (`bound i), [])) in
@@ -354,7 +355,8 @@ let tm_decl : I.Term.t I.Decl.tm -> (ProgramInfo.decl_kind * L.Decl.tm) Loco.t =
             then `func
             else `well_known
         in
-        bind (with_ref_arity name kind 0 @@ bump_of_rec_flag rec_flag @@ term body) @@ function
+        bind (with_ref_arity name kind 0 @@ bump_of_rec_flag rec_flag @@ term body) @@ fun x ->
+        match to_term x with
         | L.Term.MkClo (theta, _, _) when not (ER.is_empty theta) ->
             Util.invariant "[lower] top-level closure is trivial"
         | L.Term.MkClo (theta, n, f) ->

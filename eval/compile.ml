@@ -169,8 +169,10 @@ let rec pattern
 let rec term (t : Term.t) : 'l Text.builder Compiler.t =
     let open Compiler in
     match t with
-    | Term.Lit (`addr n) | Term.Lit (`int n) ->
+    | Term.Constant (`unboxed n) ->
         pure @@ Text.single @@ Instruction.Push (`param, `integer n)
+    | Term.Constant (`boxed r) ->
+        failwith "[compile] boxed constants: not implemented"
     | Term.App (tH, tS) ->
         app 0 (List.rev tS) Text.empty tH
         (* Why in reverse? To uphold the calling convention, we need to emit the code to generate

@@ -4,6 +4,7 @@ open BasicSyntax
 type var = [ `bound of index | `env of index ]
 
 type ctor_tag = int
+type constant_tag = int
 
 module EnvRen = struct
     (* A renaming for an environment. Used to compute the restricted environment for a closure. *)
@@ -16,10 +17,33 @@ module EnvRen = struct
 end
 
 module Constant = struct
+    type tag = constant_tag
+
     type t =
-        | CConst of ctor_name * t list
-        | CInt of Int64.t
-        | CString of string
+        | Const of ctor_name * ref list
+        | String of string
+    and ref = [ `unboxed of Int64.t | `boxed of tag ]
+
+    type spec = {
+        constant : t;
+    }
+
+    module Map = Util.IntMap
+
+    type map = {
+        map : spec Map.t;
+        next : tag;
+    }
+
+    let empty_map = {
+        map = Map.empty;
+        next = 0;
+    }
+
+    let add c m =
+        let index = m.next in
+        let new_map = { map = Map.add m.next c m.map; next = m.next + 1 } in
+        (index, new_map)
 end
 
 module Term = struct
@@ -43,7 +67,7 @@ module Term = struct
          - theta is an _environment renaming_ which maps the EVars in `f` to variables in the
            enclosing scope. It is used at runtime to initialize the environment that gets
            returned together with `f` by MkClo *)
-        | Lit of [ `int of Int64.t | `addr of Int64.t ]
+        | Constant of Constant.ref
         (* All literals are represented as integers in the lowered syntax. We just distinguish
            between boxed literals and unboxed literals. *)
         | App of head * spine

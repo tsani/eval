@@ -19,9 +19,9 @@ let print_head ppf = function
 
 let rec print_tm lvl ppf = function
     | MkClo (theta, n, f) -> fprintf ppf "mkclo(%a, %d, %s)" print_env_ren theta n f
-    | Lit l -> begin match l with
-        | `addr a -> fprintf ppf "%LdA" a
-        | `int n -> fprintf ppf "%LdI" n
+    | Constant l -> begin match l with
+        | `boxed r -> fprintf ppf "<Boxed %d>" r
+        | `unboxed n -> fprintf ppf "%LdI" n
     end
     | App (tH, tS) -> print_app lvl ppf (tH, tS)
     | Let (rec_flag, e1, e2) ->

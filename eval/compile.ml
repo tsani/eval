@@ -1,9 +1,13 @@
 (* Compiles closed syntax into bytecode. *)
 
 open BasicSyntax
+open BasicInstruction
 open Syntax.Low
-open Bytecode
+open Lincode
+open Instruction
 open RuntimeInfo
+
+let basic i = Basic i
 
 module State = struct
     type t = { label_counter : int; }
@@ -87,20 +91,20 @@ let call_mode_of_ref (r : ProgramInfo.ref_spec) =
     | `well_known -> fun n -> `closure n
     | `closure_body -> Util.invariant "[compile] calls to closure bodies are not possible"
 
-let var (v : var) : 'l Text.builder Compiler.t = fun ctx s ->
+let var (v : var) : builder Compiler.t = fun ctx s ->
     (s, match v with
-        | `bound i -> Text.single @@ Instruction.Load (`param (Ren.lookup i ctx.Ctx.var_ren))
-        | `env i -> Text.single @@ Instruction.Load (`env i))
+        | `bound i -> Builder.single @@ basic (Load (`param (Ren.lookup i ctx.Ctx.var_ren)))
+        | `env i -> Builder.single @@ basic @@ Load (`env i))
 
 let rec env_ren = let open Compiler in function
-    | [] -> pure @@ Text.empty
+    | [] -> pure @@ Builder.empty
     | v :: vs ->
         (* this happens 'backwards' because we need to arrange that the value to be stored in
             position 0 of the environment is at the top of the stack, but the variable whose value
             should go there is at index 0 in the environment renaming. *)
         bind (with_ren (Ren.shifted 1) @@ env_ren vs) @@ fun pS ->
         bind (var v) @@ fun pVar ->
-        pure @@ Text.cat pS pVar
+        pure @@ Builder.cat pS pVar
 
 (** Generates bytecode that checks whether the value on the top of the stack matches the given
     pattern. If the pattern does _not_ match, then a jump is made to the given failure label.
@@ -109,22 +113,22 @@ let rec env_ren = let open Compiler in function
 let rec pattern
         (failure : 'l)
         (pat : Term.pattern)
-        : 'l Text.builder Compiler.t =
+        : builder Compiler.t =
     let open Compiler in
     match pat with
     | WildcardPattern ->
-        pure @@ Text.chunk Instruction.[
-            Pop (`param, 0);
+        pure @@ Builder.chunk Instruction.[
+            basic @@ Pop (`param, 0);
         ]
     | VariablePattern ->
-        pure @@ Text.chunk Instruction.[
-            Move `param_to_return;
+        pure @@ Builder.chunk Instruction.[
+            basic @@ Move `param_to_return;
         ]
     | LiteralPattern (IntLit n) ->
-        pure @@ Text.chunk Instruction.([
-            Push (`param, `integer (Int64.neg n));
-            Prim Prim.Plus;
-            Jump (`nonzero, failure);
+        pure @@ Builder.chunk Instruction.([
+            basic @@ Push (`param, `integer (Int64.neg n));
+            basic @@ Prim Prim.Plus;
+            basic @@ Jump (`nonzero, failure);
         ])
     | LiteralPattern _ -> failwith "[compile] literal patterns other than int not supported"
     | ConstPattern (c, pats) ->
@@ -136,9 +140,9 @@ let rec pattern
            If we have a branch like `Cons x xs -> E`, then the indices are 0 -> x, 1 -> xs.
            So to arrange that the value to which x is bound ends up on the top of the stack, we
            process the patterns in reverse order. *)
-        let open Text in
+        let open Builder in
         pure @@ cats Instruction.[
-            chunk @@ [
+            chunk @@ List.map basic [
                 Load (`param 0); (* duplicate the constructor address *)
                 Load `constructor; (* replace the CON address with the constructor tag *)
                 Push (`param, `integer (Int64.neg (Int64.of_int c)));
@@ -148,8 +152,8 @@ let rec pattern
             cats @@ List.mapi
                 (fun i pat_body -> cats [
                     chunk [
-                        Load (`param 0); (* duplicate the constructor address *)
-                        Load (`field (field_count - i - 1)); (* replace with the nth field *)
+                        basic @@ Load (`param 0); (* duplicate the constructor address *)
+                        basic @@ Load (`field (field_count - i - 1)); (* replace with the nth field *)
                         (* Because we did the patterns in reverse, we have to 'flip' the index from
                            this mapi to load the correct field from the constructor. *)
                     ];
@@ -157,24 +161,24 @@ let rec pattern
                 ])
                 pat_bodies;
             chunk @@ [
-                Jump (`unconditional, success);
+                basic @@ Jump (`unconditional, success);
                 Label inner_failure;
-                Pop (`param, 0);
-                Jump (`unconditional, failure);
+                basic @@ Pop (`param, 0);
+                basic @@ Jump (`unconditional, failure);
                 Label success;
-                Pop (`param, 0);
+                basic @@ Pop (`param, 0);
             ];
         ]
 
-let rec term (t : Term.t) : 'l Text.builder Compiler.t =
+let rec term (t : Term.t) : builder Compiler.t =
     let open Compiler in
     match t with
     | Term.Constant (`unboxed n) ->
-        pure @@ Text.single @@ Instruction.Push (`param, `integer n)
+        pure @@ Builder.single @@ basic @@ Push (`param, `integer n)
     | Term.Constant (`boxed r) ->
-        failwith "[compile] boxed constants: not implemented"
+        pure @@ Builder.single @@ Instruction.LoadConstant r
     | Term.App (tH, tS) ->
-        app 0 (List.rev tS) Text.empty tH
+        app 0 (List.rev tS) Builder.empty tH
         (* Why in reverse? To uphold the calling convention, we need to emit the code to generate
            the arguments from right to left. However, `app` traverses the spine from left to right
            which is the simplest way to get the correct shifting of the variable renaming. *)
@@ -182,8 +186,8 @@ let rec term (t : Term.t) : 'l Text.builder Compiler.t =
     | Term.Let (NonRec, t1, t2) ->
         bind (term t1) @@ fun p1 ->
         bind (with_ren Ren.extended @@ term t2) @@ fun p2 ->
-            pure @@ Text.cats [ p1; p2;
-                Text.single @@ Instruction.Pop (`param, 1)
+            pure @@ Builder.cats [ p1; p2;
+                Builder.single @@ basic @@ Pop (`param, 1)
                 (* drop the value of t1 from the stack, since function exit only knows to clean up
                    params *)
             ]
@@ -194,30 +198,30 @@ let rec term (t : Term.t) : 'l Text.builder Compiler.t =
             bind new_label @@ fun failed ->
             bind (pattern failed pat) @@ fun p_pat ->
             bind (with_ren Ren.(extended_by n) @@ term t_branch) @@ fun p_branch ->
-            pure @@ Text.cats [
-                Text.single @@ Instruction.Load (`param 0);
+            pure @@ Builder.cats [
+                Builder.single @@ basic @@ Load (`param 0);
                 p_pat;
-                Text.single @@ Instruction.Pop (`param, 0);
+                Builder.single @@ basic @@ Pop (`param, 0);
                 (* ^ remove the value we were matching on *)
-                Text.chunk @@ List.init n @@ (fun _ -> Instruction.Move `return_to_param);
+                Builder.chunk @@ List.init n @@ (fun _ -> basic @@ Move `return_to_param);
                 (* ^ Move the matched values (which were stored on the call stack temporarily)
                    onto the parameter stack. *)
                 p_branch;
-                Text.chunk @@ List.init n @@ (fun _ -> Instruction.Pop (`param, 1));
+                Builder.chunk @@ List.init n @@ (fun _ -> basic @@ Pop (`param, 1));
                 (* ^ remove the values brought in by matching
                    we use an offset of 1 to skip the result value of the matching *)
-                Text.chunk Instruction.[
-                    Jump (`unconditional, success);
+                Builder.chunk Instruction.[
+                    basic @@ Jump (`unconditional, success);
                     Label failed;
                 ];
             ]
         in
         bind (traverse f cases) @@ fun p_cases ->
-        pure @@ Text.(cats [
+        pure @@ Builder.(cats [
             pV;
             cats p_cases;
             chunk Instruction.[
-                Halt `inexhaustive_match;
+                basic @@ Halt `inexhaustive_match;
                 Label success;
             ];
         ])
@@ -226,70 +230,70 @@ let rec term (t : Term.t) : 'l Text.builder Compiler.t =
         bind (lookup_ref f) @@ fun ProgramInfo.({ address }) ->
         let n = List.length theta in
         bind (env_ren theta) @@ fun p ->
-            pure @@ Text.cats [
+            pure @@ Builder.cats [
                 p;
-                Text.single @@ Instruction.Push (`param, `address address);
-                Text.single @@ Instruction.(MkClo { env_size = n; arity });
+                Builder.single @@ basic @@ Push (`param, `address address);
+                Builder.single @@ basic @@ MkClo { env_size = n; arity };
             ]
 
-and app n (tS : Term.spine) (p : 'l Text.builder) (tH : Term.head) : 'l Text.builder Compiler.t =
+and app n (tS : Term.spine) (acc : builder) (tH : Term.head) : builder Compiler.t =
     let open Compiler in
     match tS with
     | [] -> begin match tH with
         | Term.Var v ->
             bind (var v) @@ fun pVar ->
-            let open Text in
+            let open Builder in
             pure @@ cats [
-                p;
+                acc;
                 pVar;
                 if n > 0 then
                     chunk Instruction.[
-                        Push (`return, `integer (Int64.of_int n));
-                        Call `dynamic;
+                        basic @@ Push (`return, `integer (Int64.of_int n));
+                        basic @@ Call `dynamic;
                     ]
                 else empty;
             ]
         | Term.Ref f ->
             bind (lookup_ref f) @@ fun ref_spec ->
-            let open Text in
+            let open Builder in
             pure @@ cats [
-                p;
-                (single @@ match ref_spec.kind with
-                    | `func -> Instruction.Push (`param, `address ref_spec.address)
-                    | `well_known -> Instruction.Load (`well_known f));
+                acc;
+                (single @@ basic @@ match ref_spec.kind with
+                    | `func -> Push (`param, `address ref_spec.address)
+                    | `well_known -> Load (`well_known f));
                 if ref_spec.ProgramInfo.arity > 0
-                then single @@ Instruction.Call (
+                then single @@ basic @@ Call (
                     call_mode_of_ref ref_spec @@ ref_spec.ProgramInfo.arity
                 )
                 else empty;
                 if n - ref_spec.ProgramInfo.arity > 0
-                then chunk Instruction.[
-                    Push (`return, `integer (Int64.of_int @@ n - ref_spec.ProgramInfo.arity));
-                    Call `dynamic;
+                then chunk [
+                    basic @@ Push (`return, `integer (Int64.of_int @@ n - ref_spec.ProgramInfo.arity));
+                    basic @@ Call `dynamic;
                 ]
                 else empty;
             ]
         | Term.Const c ->
             bind (lookup_ctor c) @@ fun ctor ->
-            pure @@ Text.(cats [
-                p;
-                single @@ Instruction.Const { tag = ctor.tag; arity = ctor.arity };
+            pure @@ Builder.(cats [
+                acc;
+                single @@ basic @@ Const { tag = ctor.tag; arity = ctor.arity };
             ])
         | Term.Prim op ->
-            pure @@ Text.(cat p (single @@ Instruction.Prim op))
+            pure @@ Builder.(cat acc (single @@ basic @@ Prim op))
     end
     | t :: tS ->
-        bind (term t) @@ fun p' ->
+        bind (term t) @@ fun p ->
         with_ren (Ren.shifted 1) @@
-        app (n+1) tS (Text.cat p p') tH
+        app (n+1) tS (Builder.cat acc p) tH
 
 let return_mode_of_ref r = match ProgramInfo.(r.kind) with
     | `well_known -> Util.invariant "[compile] well-known values do not define functions"
     | `func -> `func r.arity
     | `closure_body -> `closure r.arity
 
-let decl (ctx : Ctx.t) (pgm : 'l Bytecode.Program.t) : Decl.tm -> 'l Bytecode.Program.t =
-    let Bytecode.Program.({ well_knowns; functions; top }) = pgm in
+let decl (ctx : Ctx.t) (pgm : Program.t) : Decl.tm -> Program.t =
+    let Program.({ well_knowns; functions; top }) = pgm in
     function
     | Decl.({ name; body; arity }) ->
         let ref_spec = ProgramInfo.lookup_ref name ctx.Ctx.info in
@@ -316,26 +320,26 @@ let decl (ctx : Ctx.t) (pgm : 'l Bytecode.Program.t) : Decl.tm -> 'l Bytecode.Pr
             (* then the body of the declaration needs to happen right away, and its value is
                stored in the well-known name `name` -- that is, this declaration becomes for a
                so-called "well-known" value. *)
-            Bytecode.Program.({
+            Program.({
                 well_knowns = name :: well_knowns;
                 functions;
-                top = Text.cats [top; p; Text.single @@ Instruction.Store name];
+                top = Builder.cats [top; p; Builder.single @@ basic @@ Store name];
             })
         else
-            Bytecode.Program.({
+            Program.({
                 well_knowns;
                 functions =
                     ( name
-                    , Text.(
-                          build @@ cat p (single @@ Instruction.Ret (return_mode_of_ref ref_spec))
+                    , Builder.(
+                          build @@ cat p (single @@ basic @@ Ret (return_mode_of_ref ref_spec))
                       )
                     ) :: functions;
                 top;
             })
 
-let program (ctx : Ctx.t) (pgm : Decl.program) : 'l Bytecode.Program.t =
-    let program = List.fold_left (decl ctx) Bytecode.Program.empty pgm in
+let program (ctx : Ctx.t) (pgm : Decl.program) : Program.t =
+    let program = List.fold_left (decl ctx) Program.empty pgm in
     { program with
         functions = List.rev program.functions;
-        top = Text.(cat program.top (single @@ Instruction.Halt `finished));
+        top = Builder.(cat program.top (single @@ basic @@ Halt `finished));
     }

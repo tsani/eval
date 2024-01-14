@@ -59,9 +59,10 @@ This means that those heap addresses have to be known statically. So here's what
 - linking only happens _after_ compilation! So compilation has to emit an address before the
   address is actually known.
 - we already had that problem when compiling jumps!
-    - For jumps, we introduced 'synthetic' bytecode instructions Label and SetLabel
-    - Linking eliminated those instructions from the bytecode as it resolved the (code) addresses
-      of the bytecode instructions.
+    - For jumps, we introduced the 'synthetic' bytecode instructions Label which introduces a
+      reference to its position in the code. Then, we made `Jump` take in an abstract label value.
+    - Linking eliminates the synthetic instruction as it calculates the address of each
+      instruction.
 - we can introduce a new synthetic instruction `Load_constant` to holds a tag
 - linking generates the initial heap before eliminating synthetic instructions, so all constant
   tags become associated with a genuine heap address

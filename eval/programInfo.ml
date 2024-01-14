@@ -34,11 +34,13 @@ type ctor_map = ctor_spec CtorMap.t
 type t = {
     ctors : ctor_map;
     refs : ref_map;
+    constants : Constant.map;
 }
 
 let empty = {
     ctors = CtorMap.empty;
     refs = RefMap.empty;
+    constants = Constant.empty_map;
 }
 
 let lookup_ref name info = match RefMap.find_opt name info.refs with

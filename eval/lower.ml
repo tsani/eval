@@ -78,13 +78,13 @@ end
 module State = struct
     type t = {
         fns : CloBody.map;
-        cts : L.Constant.map;
+        cts : Constant.map;
         theta : RawER.t;
     }
 
     let initial = {
         fns = CloBody.empty_map;
-        cts = L.Constant.empty_map;
+        cts = Constant.empty_map;
         theta = ER.empty;
     }
 end
@@ -134,8 +134,8 @@ module Loco = struct
         | Some d -> ({ s with fns = CloBody.remove f s.fns }, d)
 
     (** Adds a constant to the constant table, returning a fresh tag for it. *)
-    let add_constant (c : L.Constant.spec) : L.Constant.tag t = fun ctx s ->
-        let tag, cts = L.Constant.add c s.cts in
+    let add_constant (c : Constant.spec) : Constant.tag t = fun ctx s ->
+        let tag, cts = Constant.add c s.cts in
         ({ s with cts }, tag)
 
     (** Gets the current watermark. *)
@@ -275,7 +275,7 @@ let is_static_function : I.Term.t -> bool =
     | I.Term.Fun _ -> true
     | _ -> false
 
-let literal : literal -> L.Constant.ref Loco.t = let open Loco in function
+let literal : literal -> Constant.ref Loco.t = let open Loco in function
     | IntLit n -> pure @@ `unboxed n
     | CharLit c ->
         let n = Int64.of_int @@ Char.code c in
@@ -284,10 +284,10 @@ let literal : literal -> L.Constant.ref Loco.t = let open Loco in function
         let n = if b then 1L else 0L in
         pure @@ `unboxed n
     | StringLit s ->
-        bind (Loco.add_constant { constant = L.Constant.String s }) @@ fun tag ->
+        bind (Loco.add_constant { constant = Constant.String s }) @@ fun tag ->
         pure @@ `boxed tag
 
-type 'a or_constant = [ `dyn of 'a | `constant of L.Constant.ref ]
+type 'a or_constant = [ `dyn of 'a | `constant of Constant.ref ]
 
 let to_term : L.Term.t or_constant -> L.Term.t = function
     | `dyn t -> t
@@ -310,7 +310,8 @@ let rec term : I.Term.t -> L.Term.t or_constant Loco.t =
         bind (head tH) @@ fun tH ->
         bind (spine tS) @@ fun tS ->
         match tH with
-        | L.Term.Const c -> failwith "todo" (* check if all tS are constant to form a bigger constant *)
+        (* check if all tS are constant to form a bigger constant *)
+        | L.Term.Const c -> failwith "todo: bigger constants from constructors"
         | _ -> pure @@ `dyn (L.Term.App (tH, List.map to_term tS))
     in
     function

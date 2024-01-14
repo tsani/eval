@@ -16,36 +16,6 @@ module EnvRen = struct
     let is_empty (r : t) : bool = r = OSet.empty
 end
 
-module Constant = struct
-    type tag = constant_tag
-
-    type t =
-        | Const of ctor_name * ref list
-        | String of string
-    and ref = [ `unboxed of Int64.t | `boxed of tag ]
-
-    type spec = {
-        constant : t;
-    }
-
-    module Map = Util.IntMap
-
-    type map = {
-        map : spec Map.t;
-        next : tag;
-    }
-
-    let empty_map = {
-        map = Map.empty;
-        next = 0;
-    }
-
-    let add c m =
-        let index = m.next in
-        let new_map = { map = Map.add m.next c m.map; next = m.next + 1 } in
-        (index, new_map)
-end
-
 module Term = struct
     type pattern =
         | ConstPattern of ctor_tag * pattern list

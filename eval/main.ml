@@ -47,12 +47,12 @@ let main () =
                     fprintf ppf "  @[<v>%a@]@." P.Low.print_program low_program;
                     let pgm = Compile.(program (Ctx.initial info) low_program) in
                     fprintf ppf "Compilation succeeded.@.";
-                    fprintf ppf "@[<v>%a@]@." P.Bytecode.print_program pgm;
+                    fprintf ppf "@[<v>%a@]@." P.Lincode.print_program pgm;
                     let code = Link.program info pgm in
                     fprintf ppf "Linking succeeded.@.";
                     fprintf ppf "%a@." P.Bytecode.print_linked_program code;
                     let (final_state, status) =
-                        Interpret.(program Ctx.({ code = Array.of_list code }) State.initial)
+                        Interpret.(program Ctx.({ code = Array.of_list code }) (State.initial ()))
                     in
                     fprintf ppf "@[<v 2>Interpretation succeeded.@,@[<v>%a@]@]@."
                         (pp_print_list ~pp_sep: pp_print_cut (fun ppf (name, v) ->

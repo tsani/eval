@@ -1,10 +1,18 @@
 #!/bin/bash
 
-ocamlopt -g -o eval runtimeInfo.ml debug.ml oSet.mli oSet.ml result.ml util.ml loc.ml \
-    basicSyntax.ml scope.ml synint.ml synext.ml synlow.ml syntax.ml bytecode.ml \
-    prettyCommon.ml prettyBytecode.ml prettyInternal.ml prettyLow.ml pretty.ml \
-    programInfo.ml compile.ml lower.ml \
+ocamlopt -g -o eval dlist.ml runtimeInfo.ml basicSyntax.ml basicInstruction.ml debug.ml \
+    oSet.mli oSet.ml result.ml util.ml loc.ml \
+    constant.ml \
+    scope.ml synint.ml synext.ml synlow.ml syntax.ml lincode.ml bytecode.ml \
+    prettyCommon.ml \
+    prettyBasicInstruction.ml \
+    prettyLincode.ml \
+    prettyBytecode.ml \
+    prettyInternal.ml prettyLow.ml \
+    pretty.ml \
+    programInfo.ml \
+    compile.ml lower.ml \
     scopecheck.ml parser.ml tMVar.ml unify.ml typecheck.ml eval.ml \
-    link.ml interpret.ml \
+    heap.ml link.ml interpret.ml \
     main.ml &&
 OCAMLRUNPARAM=b exec ./eval "$@"

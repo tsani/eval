@@ -1,5 +1,6 @@
 (* Bytecode interpreter *)
 
+open BasicInstruction
 open BasicSyntax
 open Bytecode
 open RuntimeInfo
@@ -7,12 +8,6 @@ open RuntimeInfo
 type offset = int
 
 let heap_size = 4096
-type heap_addr = Int64.t
-type code_addr = Int64.t
-type heap = value Array.t
-
-type value_count = int
-type byte_count = int
 
 module WK = Util.StringMap
 
@@ -43,19 +38,17 @@ end
 module State = struct
     type t = {
         pc : Int64.t; (* program counter; index into the code array *)
-        ep : heap_addr; (* environment pointer, used to load env vars *)
-        heap : heap;
-        next_free : heap_addr;
+        ep : Heap.addr; (* environment pointer, used to load env vars *)
+        heap : Heap.Runtime.t;
         param_stack : Stack.t;
         return_stack : Stack.t;
-        well_knowns : heap_addr WK.t;
+        well_knowns : Heap.addr WK.t;
     }
 
-    let initial = {
+    let initial ?(heap = Heap.Runtime.make heap_size) () = {
         ep = Int64.zero;
         pc = Int64.zero;
-        heap = Array.make heap_size Int64.zero;
-        next_free = Int64.of_int 400; (* just to make heap addresses look different *)
+        heap;
         param_stack = Stack.empty;
         return_stack = Stack.empty;
         well_knowns = WK.empty;
@@ -66,152 +59,15 @@ let well_knowns s = List.of_seq @@ WK.to_seq s.State.well_knowns
 
 module Ctx = struct
     type t = {
-        code : instr Array.t;
+        code : Instruction.t Array.t;
     }
 end
 
-module HeapObject = struct
-    module Kind = struct
-        type t =
-            | CON
-            | CLO
-            | PAP
-            | ARR
+(** According to the encoding of heap objects, a CLO object is laid out as
+    <header> <body code address> <env var 1> <env var 2> ... <env var N>
+    So adding 2 to the address of a closure object gives a pointer to the environment! *)
+let closure_env_offset : Int64.t = 2L
 
-        let to_tag = function
-            | CON -> '\x01'
-            | CLO -> '\x02'
-            | PAP -> '\x03'
-            | ARR -> '\x04'
-
-        let of_tag = function
-            | '\x01' -> CON
-            | '\x02' -> CLO
-            | '\x03' -> PAP
-            | '\x04' -> ARR
-            | _ -> Util.invariant "[interpret] all tags are known"
-    end
-
-    (** Decomposes a value into 8 8-bit integers. *)
-    let decompose_value (v : value) : char list =
-        let b = Bytes.make 8 '\x00' in
-        Bytes.set_int64_ne b 0 v;
-        List.init 8 (fun i -> Bytes.get b i)
-
-    module Header = struct
-        type t = value
-
-        let encode (k : Kind.t) (counts : int list) : t =
-            if List.length counts > 7 then
-                Util.invariant "[interpret] heap object header has at most 7 counts";
-            let open Bytes in
-            let b = make 8 '\x00' in
-            set b 0 (Kind.to_tag k);
-            List.iteri (fun i n -> set b (1 + i) (Char.chr n)) counts;
-            get_int64_ne b 0
-
-        let decode (hdr : t) : Kind.t * int list =
-            let tag :: counts = decompose_value hdr in
-            (Kind.of_tag tag, List.map Char.code counts)
-    end
-
-    type con_spec = {
-        tag : int;
-        arity : value_count;
-    }
-
-    type clo_spec = {
-        env_size : value_count;
-        arity : value_count;
-        body : code_addr;
-    }
-
-    type pap_spec = {
-        held : value_count;
-        missing : value_count;
-        clo : heap_addr;
-    }
-
-    type arr_spec = {
-        capacity : value_count;
-        length: byte_count;
-    }
-
-    type blob = value Array.t
-
-    type spec =
-        | Con of con_spec
-        | Clo of clo_spec
-        | Pap of pap_spec
-        | Arr of arr_spec
-
-    type obj = spec * blob
-
-    (** According to the encoding of heap objects, a CLO object is laid out as
-        <header> <body code address> <env var 1> <env var 2> ... <env var N>
-        So adding 2 to the address of a closure object gives a pointer to the environment! *)
-    let closure_env_offset : Int64.t = 2L
-
-    (** Writes a heap object to a heap at the given address. *)
-    let encode_at (pos : heap_addr) (heap : heap) (obj : obj) : unit =
-        (** Converts the heap object to a list of values. *)
-        let to_value_list (spec, blob) = match spec with
-            | Con { tag; arity } ->
-                Header.(encode Kind.CON [tag; arity]) :: Array.to_list blob
-            | Clo { env_size; arity; body } ->
-                Header.(encode Kind.CLO [env_size; arity]) :: body :: Array.to_list blob
-            | Pap { held; missing; clo } ->
-                Header.(encode Kind.PAP [held; missing]) :: clo :: Array.to_list blob
-            | Arr { capacity; length } ->
-                Header.(encode Kind.ARR [capacity; length]) :: Array.to_list blob
-        in
-        let pos = Int64.to_int pos in
-        List.iteri (fun i v -> heap.(pos + i) <- v) (to_value_list obj)
-
-    (** `load_blob pos heap spec` loads the array of values associated to the object with header
-        `spec` located at position `pos` in `heap`. *)
-    let load_blob (heap : heap) (pos : heap_addr) : spec -> blob =
-        let pos = Int64.to_int pos in
-        function
-        | Con { arity } -> Array.init arity (fun i -> heap.(pos + 1 + i))
-        | Clo { env_size } -> Array.init env_size (fun i -> heap.(pos + 2 + i))
-        | Pap { held } -> Array.init held (fun i -> heap.(pos + 2 + i))
-        | Arr { capacity } -> Array.init capacity (fun i -> heap.(pos + 1 + i))
-
-    (** Decodes a heap object from a heap at the given address. *)
-    let load_spec (heap : heap) (pos : heap_addr) : spec =
-        let pos = Int64.to_int pos in
-        match Header.decode heap.(pos) with
-        | CON, tag :: arity :: _ -> Con { tag; arity }
-        | CLO, env_size :: arity :: _ -> Clo { env_size; arity; body = heap.(pos + 1) }
-        | PAP, held :: missing :: _ -> Pap { held; missing; clo = heap.(pos + 1) }
-        | ARR, capacity :: length :: _ -> Arr { capacity; length }
-
-    let load_constructor_field (heap : heap) (pos : heap_addr) (n : int) : value =
-        let pos = Int64.to_int pos in
-        heap.(pos + 1 + n)
-
-    (** Calculates the size (as a count of values) of the given heap object. *)
-    let size : spec -> int = function
-        | Con { arity } -> 1 + arity
-        | Clo { env_size } -> 2 + env_size
-        | Pap { held; missing } -> 2 + held
-        | Arr { capacity } -> 1 + capacity
-        (* Everything gets a +1 for the header, then Clo and Pap get an extra +1 since they hold an
-           address in addition to their fields. *)
-
-    let as_clo = function
-        | Clo spec -> spec
-        | _ -> Util.invariant "[interpret] heap object must be a closure"
-
-    let as_con = function
-        | Con spec -> spec
-        | _ -> Util.invariant "[interpret] heap object must be a constructor"
-
-    let as_pap = function
-        | Pap spec -> spec
-        | _ -> Util.invariant "[interpret] heap object must be a partial application"
-end
 
 module Interpreter = struct
     type 'a t = Ctx.t -> State.t -> State.t * 'a
@@ -224,11 +80,11 @@ module Interpreter = struct
     let void m = bind m @@ fun _ -> pure ()
 
     (* Loads the instruction at the PC and increments the PC. *)
-    let next_instruction : instr t = fun ctx s ->
+    let next_instruction : Instruction.t t = fun ctx s ->
         let i = ctx.code.(Int64.to_int s.pc) in
         Debug.printf "PARAM:  @[%a@]@," Stack.print s.param_stack;
         Debug.printf "RETURN: @[%a@]@," Stack.print s.return_stack;
-        Debug.printf "TRACE:  %Ld. %a@," s.pc Pretty.Bytecode.print_instruction i;
+        Debug.printf "TRACE:  %Ld. %a@," s.pc Pretty.BasicInstruction.print_instruction i;
         ({ s with pc = Int64.add s.pc 1L }, i)
 
     let rec traverse (f : 'a -> 'b t) : 'a list -> 'b list t = function
@@ -307,32 +163,29 @@ module Interpreter = struct
         bind (pop src 0) @@ push dst
 
     (** Gets a value from the heap. *)
-    let deref (addr : heap_addr) (offset : int) = fun ctx s ->
-        (s, s.State.heap.(Int64.to_int addr + offset))
+    let deref (addr : Heap.addr) (offset : int) = fun ctx s ->
+        (s, s.State.heap.Heap.Runtime.body.(Int64.to_int addr + offset))
 
-    let load_heap_object (pos : heap_addr) : HeapObject.spec t = fun ctx s ->
-        (s, HeapObject.load_spec s.State.heap pos)
+    let load_heap_object (pos : Heap.addr) : Heap.Object.spec t = fun ctx s ->
+        (s, Heap.Object.load_spec pos s.State.heap.Heap.Runtime.body)
 
-    let load_associated_blob (pos : heap_addr) (spec : HeapObject.spec) : HeapObject.blob t =
-        fun ctx s -> (s, HeapObject.load_blob s.State.heap pos spec)
+    let load_associated_blob (pos : Heap.addr) (spec : Heap.Object.spec) : Heap.Object.blob t =
+        fun ctx s -> (s, Heap.Object.load_blob pos s.State.heap.Heap.Runtime.body spec)
 
-    let load_full_heap_object (pos : heap_addr) : HeapObject.obj t = fun ctx s ->
-        let spec = HeapObject.load_spec s.State.heap pos in
-        let blob = HeapObject.load_blob s.State.heap pos spec in
+    let load_full_heap_object (pos : Heap.addr) : Heap.Object.obj t = fun ctx s ->
+        let spec = Heap.Object.load_spec pos s.State.heap.Heap.Runtime.body in
+        let blob = Heap.Object.load_blob pos s.State.heap.Heap.Runtime.body spec in
         (s, (spec, blob))
 
-    let load_constructor_field (pos : heap_addr) (n : int) : value t = fun ctx s ->
-        (s, HeapObject.load_constructor_field s.State.heap pos n)
+    let load_constructor_field (pos : Heap.addr) (n : int) : value t =
+        deref pos (n + 1)
 
     (** Allocates space on the heap for the object, writes it to the heap, and returns the
         address of the object. *)
-    let store_heap_object ((spec, blob) : HeapObject.obj) : heap_addr t = fun ctx s ->
+    let store_heap_object (obj : Heap.Object.obj) : Heap.addr t = fun ctx s ->
         let open State in
-        let addr = s.next_free in
-        HeapObject.encode_at addr s.State.heap (spec, blob);
-        ( { s with next_free = Int64.add addr (Int64.of_int @@ HeapObject.size spec) }
-        , addr
-        )
+        let (addr, heap) = Heap.Runtime.write_next_free (Heap.Object.serialize obj) s.heap in
+        ({ s with heap }, addr)
 end
 
 module Exec = struct
@@ -348,12 +201,12 @@ module Exec = struct
             pure `running
 
         | `closure n ->
-            bind (pop `param 0) @@ fun heap_addr ->
+            bind (pop `param 0) @@ fun clo_addr ->
             bind get @@ fun s ->
             bind (push `return s.ep) @@ fun _ ->
             bind (push `return s.pc) @@ fun _ ->
-            bind (set_ep (Int64.add heap_addr HeapObject.closure_env_offset)) @@ fun _ ->
-            bind (deref heap_addr 1) @@ fun clo_body_addr ->
+            bind (set_ep (Int64.add clo_addr 2L)) @@ fun _ ->
+            bind (deref clo_addr 1) @@ fun clo_body_addr ->
             bind (jump_abs clo_body_addr) @@ fun _ ->
             pure `running
 
@@ -367,7 +220,7 @@ module Exec = struct
                 (* otherwise there are more arguments to apply *)
                 bind (pop `param 0) @@ fun obj_addr ->
                 bind (load_heap_object obj_addr) @@
-                let open HeapObject in function
+                let open Heap.Object in function
                 | Clo { arity } when arg_count < arity ->
                     bind (pops arg_count `param 0) @@ fun args ->
                     bind (store_heap_object
@@ -382,7 +235,7 @@ module Exec = struct
                     bind (push `return (Int64.of_int @@ arg_count - arity)) @@ fun _ ->
                     bind (push `return s.ep) @@ fun _ ->
                     bind (push `return @@ Int64.sub s.pc 1L) @@ fun _ ->
-                    bind (set_ep (Int64.add obj_addr HeapObject.closure_env_offset)) @@ fun _ ->
+                    bind (set_ep (Int64.add obj_addr 2L)) @@ fun _ ->
                     bind (jump_abs body) @@ fun _ ->
                     pure `running
                 | Pap { held; missing; clo } as spec when arg_count < missing ->
@@ -433,14 +286,14 @@ module Exec = struct
         bind (pops (env_size + 1) `param 0) @@ function
         | [] -> Util.invariant "[interpret] [mkclo] pops at least 1 item"
         | (body :: env) ->
-            let obj = (HeapObject.(Clo { env_size; arity; body }), Array.of_list env) in
+            let obj = (Heap.Object.(Clo { env_size; arity; body }), Array.of_list env) in
             bind (store_heap_object obj) @@ fun addr ->
             bind (push `param addr) @@ fun _ ->
             pure `running
 
     let const (tag, arity) : exec =
         bind (pops arity `param 0) @@ fun fields ->
-        let obj = (HeapObject.(Con { tag; arity }), Array.of_list fields) in
+        let obj = (Heap.Object.(Con { tag; arity }), Array.of_list fields) in
         bind (store_heap_object obj) @@ fun addr ->
         bind (push `param addr) @@ fun _ ->
         pure `running
@@ -464,7 +317,7 @@ module Exec = struct
         | `constructor ->
             bind (pop `param 0) @@ fun addr ->
             bind (load_heap_object addr) @@ fun obj ->
-            let HeapObject.({ tag }) = HeapObject.as_con obj in
+            let Heap.Object.({ tag }) = Heap.Object.as_con obj in
             bind (push `param @@ Int64.of_int tag) @@ fun _ ->
             pure `running
         | `field n ->
@@ -534,20 +387,19 @@ module Exec = struct
         bind (push stack_mode v) @@ fun _ -> pure `running
 
     let dispatch = function
-        | Instruction.Call call_mode -> call call_mode
-        | Instruction.Ret ret_mode -> ret ret_mode
-        | Instruction.MkClo { env_size; arity } -> mkclo (env_size, arity)
-        | Instruction.Const { tag; arity } -> const (tag, arity)
-        | Instruction.Pop (stack_mode, offset) -> pop (stack_mode, offset)
-        | Instruction.Push (stack_mode, push_mode) -> push (stack_mode, push_mode)
-        | Instruction.Move move_mode -> move move_mode
-        | Instruction.Load load_mode -> load load_mode
-        | Instruction.Store name -> store name
-        | Instruction.Prim p -> prim p
-        | Instruction.Jump (jump_mode, offset) -> jump (jump_mode, offset)
-        | Instruction.Label _ -> Util.invariant "[interpret] labels are already interpreted"
-        | Instruction.Halt status -> pure status
-        | Instruction.MkPap _ -> Util.not_implemented ()
+        | Call call_mode -> call call_mode
+        | Ret ret_mode -> ret ret_mode
+        | MkClo { env_size; arity } -> mkclo (env_size, arity)
+        | Const { tag; arity } -> const (tag, arity)
+        | Pop (stack_mode, offset) -> pop (stack_mode, offset)
+        | Push (stack_mode, push_mode) -> push (stack_mode, push_mode)
+        | Move move_mode -> move move_mode
+        | Load load_mode -> load load_mode
+        | Store name -> store name
+        | Prim p -> prim p
+        | Jump (jump_mode, offset) -> jump (jump_mode, offset)
+        | Halt status -> pure status
+        | MkPap _ -> Util.not_implemented ()
 
     (** Loads the next instruction, updating the PC, and dispatches it. *)
     let step = bind next_instruction dispatch

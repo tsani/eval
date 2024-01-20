@@ -108,7 +108,7 @@ let eval_head (s : State.t) (env : Env.t) : Term.head -> Value.t = function
   | Const (_, c) -> Value.Const (c, [])
   | Prim (_, prim) -> Value.Prim prim
 
-let eval_prim s (prim, vS) : Value.t =
+let eval_prim (prim, vS) : Value.t =
   let open Prim in
   let open Value in
   match prim, vS with
@@ -124,6 +124,7 @@ let eval_prim s (prim, vS) : Value.t =
   | Times, [Lit (IntLit n1); Lit (IntLit n2)] -> Lit (IntLit (Int64.mul n1 n2))
   | Neg, [Lit (IntLit n)] -> Lit (IntLit (Int64.sub Int64.zero n))
   | Div, [Lit (IntLit n1); Lit (IntLit (n2))] -> Lit (IntLit (Int64.div n1 n2))
+  | _ -> Util.invariant "[eval_prim] all cases are handled"
 
 let rec eval (s : State.t) (env : Env.t) : Term.t -> Value.t = function
   | Lit (_, lit) -> Value.Lit lit
@@ -167,7 +168,7 @@ and eval_val_app s : Value.t * Value.spine -> Value.t = function
   | vH, [] -> vH
   | Value.Clo (env', xS, t), vS -> eval_clo_app s env' (xS, t, vS)
   | Value.Const (c, vS1), vS2 -> Value.Const (c, vS1 @ vS2)
-  | Value.Prim prim, vS -> eval_prim s (prim, vS)
+  | Value.Prim prim, vS -> eval_prim (prim, vS)
   | vH, _ -> RuntimeError.apply_non_clo Loc.Span.fake vH
 
 and eval_app (s : State.t) (env : Env.t) : Term.head * Term.spine -> Value.t = function

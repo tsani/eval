@@ -10,7 +10,7 @@ let loc_of_tp (tmvars : TMVar.sub) (t : Type.t) = let open Type in match TMVar.c
   | Arrow (loc, _, _) -> loc
   | TVar (loc, _) -> loc
   | Named (loc, _, _) -> loc
-  | TMVar (loc, a) -> (* the TMVar must be uninstantiated by postcondition of chase *)
+  | TMVar (loc, _a) -> (* the TMVar must be uninstantiated by postcondition of chase *)
     loc
 
 (* Synthesizes the (polymorphic) type of a constructor from its ctor definition
@@ -39,12 +39,12 @@ type infer_state = {
 }
 
 let map_tmvars (f : TMVar.sub -> TMVar.sub) (s : infer_state) : infer_state =
-  { s with tmvars = f s.tmvars }
+  { tmvars = f s.tmvars }
 
 (* Examines the current TMVar substitution to compute something and possibly transform the substitution. *)
 let with_tmvars (f : TMVar.sub -> TMVar.sub * 'a) (s : infer_state) : infer_state * 'a =
   let tmvars, x = f s.tmvars in
-  { s with tmvars }, x
+  { tmvars }, x
 
 let fresh_tmvar (s : infer_state) (prefix : string) : infer_state * tmvar_name =
   s |> with_tmvars (fun tmvars -> TMVar.fresh tmvars prefix)
@@ -106,21 +106,27 @@ let generalize (outer : (Type.loc * tmvar_name) list) (tp : Type.t) : Type.sc =
     List.filter (fun (_, x) -> not @@ List.exists (fun (_, y) -> x = y) outer)
   in
   (* Construct a substitution that eliminates the TMVars into TVars *)
-  let next (a :: letters, tmvars) (loc, x) = match TMVar.lookup tmvars x with
-    | `not_found ->
-      (letters, TMVar.extend_sub tmvars x ~inst: (Some (TVar (loc, a))))
-      (* TODO something better than this trash *)
-    | `inst t -> (letters, tmvars) (* in case of duplicates do nothing *)
+  let next (letters, tmvars) (loc, x) = match letters with
+      | [] -> Util.invariant "we always have enough letters"
+      | a :: letters -> match TMVar.lookup tmvars x with
+          | `not_found ->
+              (letters, TMVar.extend_sub tmvars x ~inst: (Some (TVar (loc, a))))
+              (* TODO something better than this trash *)
+          | `inst _t -> (letters, tmvars) (* in case of duplicates do nothing *)
 
-    (* Since we are constructing the substitution right here, and every entry we
-       put in it is instantiated, we have the invariant that `uninst is an
-       impossible case. *)
-    | `uninst -> Util.invariant "every tmvar is instantiated in the substitution we are building"
+          (* Since we are constructing the substitution right here, and every entry we
+             put in it is instantiated, we have the invariant that `uninst is an
+             impossible case. *)
+          | `uninst -> Util.invariant "every tmvar is instantiated in the substitution we are building"
   in
   let (_, tmvars) = List.fold_left next (letters, TMVar.empty_sub) tmvar_locd_names in
   (* The substitution is in fact a renaming of TMVars to TVars and contains no
      uninstantiated vars, so the following partial matching is justified. *)
-  let binders = List.map (fun (_, Some (Type.TVar (_, x))) -> x) @@ TMVar.list_of_sub tmvars in
+  let f = function
+      | (_, Some (Type.TVar (_, x))) -> x
+      | _ -> Util.invariant "generated substitution is a renaming of all TMVars into TVars"
+  in
+  let binders = List.map f @@ TMVar.list_of_sub tmvars in
   (binders, TMVar.apply_sub tmvars tp)
 
 type unify_kind = [
@@ -162,14 +168,11 @@ module Error = struct
   type term_stack = term_stack_entry list
 
   type report = {
-    (** The stack of (sub)terms that lead to the error. *)
-    term_stack : term_stack;
+    term_stack : term_stack; (** The stack of (sub)terms that lead to the error. *)
 
-    (** The actual error encountered. *)
-    error : t;
+    error : t; (** The actual error encountered. *)
 
-    (** The location where the error occurred. *)
-    loc : Loc.span;
+    loc : Loc.span; (** The location where the error occurred. *)
   }
 
   let report loc (error : t) = { loc; error; term_stack = [] }
@@ -207,6 +210,9 @@ module Error = struct
       fprintf ppf "@[<v>@[<hv 2>in a recursive definition for@ %s@]@,@[<hv 2>with inferred type@ @[%a@]@]@]"
         tm_name
         (P.print_tp 0) tp
+    | `app (scope, t) ->
+        fprintf ppf "@[<v>@[<hv 2>when unifying the application head@ %a@]@,with a function type@]"
+            (P.print_tm 0 scope) t
 
   let print ppf : t -> unit =
     let open Format in
@@ -265,8 +271,8 @@ let unify loc (k : unify_kind) : 'a Unify.result -> 'a result =
   in
   Result.map_error (fun err -> Error.report loc @@ f err)
 
-let set_tmvars s (k : infer_state -> 'a result) : TMVar.sub -> 'a result = fun tmvars ->
-  k { s with tmvars }
+let set_tmvars (k : infer_state -> 'a result) : TMVar.sub -> 'a result = fun tmvars ->
+  k { tmvars }
 
 let dprintf env = Format.fprintf env.ppf
 
@@ -276,7 +282,7 @@ let infer_literal = function
   | CharLit _ -> Char
   | StringLit _ -> String
 
-let infer_prim loc env s =
+let infer_prim loc s =
   let open Prim in
   let open Type in
   let builtin prim = Builtin (`inferred loc, prim) in
@@ -297,7 +303,7 @@ let infer_prim loc env s =
   | Lt -> s, arrows [builtin Int; builtin Int] (builtin Bool)
 
 let infer_head (env : infer_env) (s : infer_state) : Term.head -> (infer_state * Type.t) result =
-  let open Term in let open Type in
+  let open Term in
   function
   | Const (_, c) -> Result.ok @@ instantiate_ctor_type env s c
   | Var (_, i) -> begin match lookup_var env.ctx i with
@@ -306,11 +312,11 @@ let infer_head (env : infer_env) (s : infer_state) : Term.head -> (infer_state *
     end
   | Ref (_, f) -> begin match Signature.lookup_tm f env.sg with
       | None -> Util.invariant "scopecheck: all references are resolved"
-      | Some ({ typ }) -> match typ with
+      | Some ({ typ; _ }) -> match typ with
         | None -> Util.invariant "every ref's type is known"
         | Some typ -> Result.ok (instantiate s typ)
     end
-  | Prim (loc, prim) -> Result.ok @@ infer_prim loc env s prim
+  | Prim (loc, prim) -> Result.ok @@ infer_prim loc s prim
 
 
 let rec infer_tm (env : infer_env) (s : infer_state) : Term.t -> (infer_state * Type.t) result =
@@ -333,7 +339,7 @@ let rec infer_tm (env : infer_env) (s : infer_state) : Term.t -> (infer_state * 
       unify loc
         (`head_spine (Ctx.to_scope env.ctx, (tH, TMVar.apply_sub s.tmvars aH), (tS, TMVar.apply_sub s.tmvars aS)))
         (Unify.types s.tmvars (aH, aS))
-    end @@ set_tmvars s @@ fun s ->
+    end @@ set_tmvars @@ fun s ->
     Result.ok (s, a_ret)
   | Match (match_loc, t, cases) ->
     let open Result in
@@ -345,7 +351,7 @@ let rec infer_tm (env : infer_env) (s : infer_state) : Term.t -> (infer_state * 
     let s, x = fresh_tmvar s "b" in
     let rec go s = function
       | [] -> ok s
-      | Case (loc, p, t_body) :: cases ->
+      | Case (_, p, t_body) :: cases ->
         dprintf env "@[<hv 2>Infer type of pattern@ %a@]@," (P.print_pattern 0) p;
         bind (infer_pat env s p) @@ fun (env', s, aP) ->
         bind begin
@@ -353,7 +359,7 @@ let rec infer_tm (env : infer_env) (s : infer_state) : Term.t -> (infer_state * 
             (loc_of_pattern p)
             (`scru_pat (Ctx.to_scope env.ctx, (t, a_scru), (p, aP)))
             (Unify.types s.tmvars (a_scru, aP))
-        end @@ set_tmvars s @@ fun s ->
+        end @@ set_tmvars @@ fun s ->
         dprintf env "Inferring body type.@,";
         bind (infer_tm env' s t_body) @@ fun (s, a_body) ->
         let a_body' = TMVar.apply_sub s.tmvars a_body in
@@ -366,13 +372,13 @@ let rec infer_tm (env : infer_env) (s : infer_state) : Term.t -> (infer_state * 
             match_loc
             (`case_body ((Ctx.to_scope env.ctx, t_body), a_body', a_other_body))
             (Unify.types s.tmvars (a_other_body, a_body))
-        end @@ set_tmvars s @@ fun s -> go s cases
+        end @@ set_tmvars @@ fun s -> go s cases
     in
     dprintf env "Processing match cases@,";
     bind (go s cases) @@ fun s ->
     dprintf env "Done processing cases.@,";
     Result.ok (s, TMVar (`inferred match_loc, x))
-  | Let (loc, Rec, (loc_x, x), e1, e2) ->
+  | Let (_, Rec, (loc_x, x), e1, e2) ->
     let s, b = fresh_tmvar s "b" in
     (* in the env for inferring the type of x = e1, we introduce a binding x : T
     where T = a#n, that is a fresh TMVar.*)
@@ -387,7 +393,7 @@ let rec infer_tm (env : infer_env) (s : infer_state) : Term.t -> (infer_state * 
     (* Form a new version of env', but this time using the generalized type of e1 for x. *)
     let env = extend_ctx env (x, tp_sc) in
     push_scoped env (`term e2) @@ infer_tm env s e2
-  | Let (loc, NonRec, (loc_x, x), e1, e2) ->
+  | Let (_, NonRec, (_, x), e1, e2) ->
     Result.bind (push_scoped env (`term e1) @@ infer_tm env s e1) @@ fun (s, scru_tp) ->
     let env = apply_sub_to_ctx s.tmvars env in
     let scru_tp = TMVar.apply_sub s.tmvars scru_tp in
@@ -433,7 +439,7 @@ and infer_pat (env : infer_env) (s : infer_state) : Term.pattern -> (infer_env *
     let inferred_ctor_tp' = TMVar.apply_sub s.tmvars inferred_ctor_tp in
     let u = Unify.types s.tmvars (ctor_tp, inferred_ctor_tp) in
     Result.bind (unify loc (`ctor_pat_spine ((c, ctor_tp'), (pat_spine, inferred_ctor_tp'))) u) @@ fun tmvars ->
-    Result.ok (env, { s with tmvars }, result_tp)
+    Result.ok (env, { tmvars }, result_tp)
 
 (* Given a spine t1, ..., tn, constructs the type of a constructor that would accept this spine.
  * Let T1, ..., Tn be the types of the spine's elements. Then the type T1 -> ... -> Tn -> X
@@ -486,7 +492,7 @@ let check_decl ppf (sg : Term.t Signature.t) : Term.t Decl.t -> Term.t Signature
         Result.bind (infer_tm (make_env ppf sg) { tmvars } body) @@ fun (s, tp) ->
         Result.bind begin
           unify loc (`recursive (name, tp)) (Unify.types s.tmvars (tp_synth, tp))
-        end @@ fun tmvars ->
+        end @@ fun _tmvars ->
         Result.bind begin match typ with
           | None -> (* no user-supplied type *)
             let tp = TMVar.apply_sub s.tmvars tp in

@@ -98,15 +98,15 @@ module Interpreter = struct
         | [] -> pure ()
         | x :: xs -> bind (f x) @@ fun _ -> iter f xs
 
-    let get : State.t t = fun ctx s -> (s, s)
+    let get : State.t t = fun _ctx s -> (s, s)
 
     (** Applies a transformation to the state. *)
-    let modify (f : State.t -> State.t) : unit t = fun ctx s -> (f s, ())
+    let modify (f : State.t -> State.t) : unit t = fun _ctx s -> (f s, ())
 
     let set_ep ep = modify (fun s -> { s with ep })
 
     (** Applies a transformation to the state that computes something on the side. *)
-    let modify_with (f : State.t -> State.t * 'a) : 'a t = fun ctx s ->
+    let modify_with (f : State.t -> State.t * 'a) : 'a t = fun _ctx s ->
         let (s', x) = f s in (s', x)
 
     (** Applies a transformation to a chosen stack that computes something on the side. *)
@@ -163,16 +163,16 @@ module Interpreter = struct
         bind (pop src 0) @@ push dst
 
     (** Gets a value from the heap. *)
-    let deref (addr : Heap.addr) (offset : int) = fun ctx s ->
+    let deref (addr : Heap.addr) (offset : int) = fun _ctx s ->
         (s, s.State.heap.Heap.Runtime.body.(Int64.to_int addr + offset))
 
-    let load_heap_object (pos : Heap.addr) : Heap.Object.spec t = fun ctx s ->
+    let load_heap_object (pos : Heap.addr) : Heap.Object.spec t = fun _ctx s ->
         (s, Heap.Object.load_spec pos s.State.heap.Heap.Runtime.body)
 
     let load_associated_blob (pos : Heap.addr) (spec : Heap.Object.spec) : Heap.Object.blob t =
-        fun ctx s -> (s, Heap.Object.load_blob pos s.State.heap.Heap.Runtime.body spec)
+        fun _ctx s -> (s, Heap.Object.load_blob pos s.State.heap.Heap.Runtime.body spec)
 
-    let load_full_heap_object (pos : Heap.addr) : Heap.Object.obj t = fun ctx s ->
+    let load_full_heap_object (pos : Heap.addr) : Heap.Object.obj t = fun _ctx s ->
         let spec = Heap.Object.load_spec pos s.State.heap.Heap.Runtime.body in
         let blob = Heap.Object.load_blob pos s.State.heap.Heap.Runtime.body spec in
         (s, (spec, blob))
@@ -182,7 +182,7 @@ module Interpreter = struct
 
     (** Allocates space on the heap for the object, writes it to the heap, and returns the
         address of the object. *)
-    let store_heap_object (obj : Heap.Object.obj) : Heap.addr t = fun ctx s ->
+    let store_heap_object (obj : Heap.Object.obj) : Heap.addr t = fun _ctx s ->
         let open State in
         let (addr, heap) = Heap.Runtime.write_next_free (Heap.Object.serialize obj) s.heap in
         ({ s with heap }, addr)
@@ -193,14 +193,14 @@ module Exec = struct
     open Interpreter
 
     let call : call_mode -> exec = function
-        | `func n ->
+        | `func _n ->
             bind (pop `param 0) @@ fun code_addr ->
             bind get @@ fun s ->
             bind (push `return s.pc) @@ fun _ ->
             bind (jump_abs code_addr) @@ fun _ ->
             pure `running
 
-        | `closure n ->
+        | `closure _n ->
             bind (pop `param 0) @@ fun clo_addr ->
             bind get @@ fun s ->
             bind (push `return s.ep) @@ fun _ ->
@@ -210,6 +210,7 @@ module Exec = struct
             bind (jump_abs clo_body_addr) @@ fun _ ->
             pure `running
 
+        | `pap _ -> failwith "[interpret] [call] `pap TODO"
         | `dynamic ->
             bind (pop `return 0) @@ function
             | k when k = Int64.zero ->
@@ -221,7 +222,7 @@ module Exec = struct
                 bind (pop `param 0) @@ fun obj_addr ->
                 bind (load_heap_object obj_addr) @@
                 let open Heap.Object in function
-                | Clo { arity } when arg_count < arity ->
+                | Clo { arity; _ } when arg_count < arity ->
                     bind (pops arg_count `param 0) @@ fun args ->
                     bind (store_heap_object
                         ( Pap { held = arg_count; missing = arity - arg_count; clo = obj_addr; }
@@ -230,7 +231,7 @@ module Exec = struct
                     ) @@ fun pap_addr ->
                     bind (push `param pap_addr) @@ fun _ ->
                     pure `running
-                | Clo { arity; body } -> (* then arg_count is >= arity *)
+                | Clo { arity; body; _ } -> (* then arg_count is >= arity *)
                     bind get @@ fun s ->
                     bind (push `return (Int64.of_int @@ arg_count - arity)) @@ fun _ ->
                     bind (push `return s.ep) @@ fun _ ->
@@ -248,7 +249,7 @@ module Exec = struct
                     ) @@ fun pap_addr ->
                     bind (push `param pap_addr) @@ fun _ ->
                     pure `running
-                | Pap { missing; clo } as spec ->
+                | Pap { missing; clo; _ } as spec ->
                     (* there are enough values to call the function now, so we load its saved arguments
                        onto the stack. They were saved _in order_, so we have to load them in reverse
                        to arrange that the first argument ends up on the top of the stack. *)
@@ -263,6 +264,10 @@ module Exec = struct
                     bind (deref clo 1) @@ fun clo_body_addr ->
                     bind (jump_abs clo_body_addr) @@ fun _ ->
                     pure `running
+
+                (* The following cases are ruled out by typechecking. *)
+                | Con _ -> Util.invariant "[interpret] [call] Con -- type error"
+                | Arr _ -> Util.invariant "[interpret] [call] Arr -- type error"
 
     let ret : return_mode -> exec =
         (* removes the function's parameters from the stack *)
@@ -317,7 +322,7 @@ module Exec = struct
         | `constructor ->
             bind (pop `param 0) @@ fun addr ->
             bind (load_heap_object addr) @@ fun obj ->
-            let Heap.Object.({ tag }) = Heap.Object.as_con obj in
+            let Heap.Object.({ tag; _ }) = Heap.Object.as_con obj in
             bind (push `param @@ Int64.of_int tag) @@ fun _ ->
             pure `running
         | `field n ->

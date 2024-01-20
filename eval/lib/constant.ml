@@ -40,8 +40,8 @@ let add c m =
     let new_map = { map = Map.add m.next c m.map; next = m.next + 1 } in
     (index, new_map)
 
-let lookup tag { map } = Map.find_opt tag map
+let lookup tag { map; _ } = Map.find_opt tag map
 
-let lookup' tag { map } = match Map.find_opt tag map with
+let lookup' tag { map; _ } = match Map.find_opt tag map with
     | Some x -> x
     | None -> Util.invariant "[constant] the map contains all constants"

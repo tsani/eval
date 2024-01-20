@@ -12,7 +12,7 @@ module BI = B.Instruction
 module I = BasicInstruction
 
 let resolve_labels (body : LI.t list) : BI.t list =
-    (** Removes all Label nodes from the given body while computing a map associating label numbers
+    (* Removes all Label nodes from the given body while computing a map associating label numbers
         to indices in the body that the label refers to. *)
     let rec unlabel (map : offset LabelMap.t) (i : int) (body : LI.t list)
             : offset LabelMap.t * BI.t list =
@@ -22,6 +22,7 @@ let resolve_labels (body : LI.t list) : BI.t list =
         | Basic instr :: rest ->
             let (map, rest) = unlabel map (i+1) rest in
             (map, instr :: rest)
+        | LoadConstant _ :: _rest -> failwith "[link] TODO LoadConstant"
     in
     let label_map, unlabelled_body = unlabel LabelMap.empty 0 body in
     let calculate_offset = function
@@ -65,7 +66,7 @@ let populate_heap_with_constants
     in
     let go (addr_map, runtime) (tag, Constant.({ constant })) =
         match constant with
-        | Constant.String s -> failwith "todo: populate heap with string constants"
+        | Constant.String _s -> failwith "todo: populate heap with string constants"
         | Constant.Const (c, rs) ->
             let blob = Array.of_list (List.map (value_of_ref addr_map) rs) in
             let spec = Heap.Object.Con { tag = c; arity = Array.length blob } in
@@ -79,4 +80,4 @@ let populate_heap_with_constants
     |> Seq.fold_left go (Constant.Map.empty, heap)
 
 let program (info : ProgramInfo.t) (pgm : L.Program.t) : BI.t list =
-    resolve_addresses info B.Program.(("_", B.Builder.build pgm.top) :: pgm.functions)
+    resolve_addresses info (("_", B.Builder.build pgm.top) :: pgm.functions)

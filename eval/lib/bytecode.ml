@@ -1,5 +1,4 @@
 open RuntimeInfo
-open BasicInstruction
 
 module Instruction = struct
     type t = offset BasicInstruction.t

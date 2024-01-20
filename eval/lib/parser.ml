@@ -57,7 +57,7 @@ let rec normalize_label = function
 
 let print_parser_label ppf lbl =
   let open Format in
-  pp_print_list ~pp_sep: (fun ppf () -> fprintf ppf ",@ ") (fun s -> fprintf ppf "%s") ppf (normalize_label lbl)
+  pp_print_list ~pp_sep: (fun ppf () -> fprintf ppf ",@ ") (fun ppf s -> fprintf ppf "%s" s) ppf (normalize_label lbl)
 
 module ParseError = struct
   type content =
@@ -76,7 +76,7 @@ module ParseError = struct
   let print ppf (loc, _, content) =
     let open Format in
     let print_content ppf content = match content with
-      | NotExactly { expected } -> fprintf ppf "expected exactly `%s'" expected
+      | NotExactly { expected; _ } -> fprintf ppf "expected exactly `%s'" expected
       | Unsatisfied -> fprintf ppf "satisfaction failed"
       | NoMoreChoices label -> fprintf ppf "tried all the choices @[%a@]" print_parser_label label
       | NotFollowedBy label -> fprintf ppf "not followed by @[%a@]" print_parser_label label
@@ -116,13 +116,13 @@ let label label p = label' (Label label) p
 (** Obtains the parser environment. *)
 let env : Env.t t = {
   label = Anon;
-  run = fun r s fail return -> return s r
+  run = fun r s _fail return -> return s r
 }
 
 (** Obtains the current parser position. *)
 let here : Loc.t t = {
   label = Anon;
-  run = fun r s fail return -> return s s.State.here
+  run = fun _r s _fail return -> return s s.State.here
 }
 
 (** Runs `p' with unlimited backtracking enabled. *)
@@ -135,14 +135,14 @@ let trying (p : 'a t) : 'a t = {
     This even allows recovering from fatal errors. *)
 let handle (p : 'a t) : (ParseError.t, 'a) Result.t t = {
   label = Anon;
-  run = fun r s fail return -> p.run r s
+  run = fun r s _fail return -> p.run r s
       (fun e -> return s @@ Result.Error e)
       (fun s x -> return s @@ Result.Ok x)
 }
 
 let pure (x : 'a) : 'a t = {
   label = Anon;
-  run = fun r s fail return -> return s x
+  run = fun _r s _fail return -> return s x
 }
 
 let bind (p : 'a t) (k : 'a -> 'b t) : 'b t = {
@@ -154,7 +154,7 @@ let seq2 p1 p2 = bind p1 @@ fun x1 -> bind p2 @@ fun x2 -> pure (x1, x2)
 
 let fail_raw (e : ParseError.t) : 'a t = {
   label = Anon;
-  run = fun r s fail return -> fail e
+  run = fun _r _s fail _return -> fail e
 }
 
 (** Causes a parser error at the given location. *)
@@ -183,12 +183,12 @@ let map (f : 'a -> 'b) (p : 'a t) : 'b t = {
     If `p1' fails while consuming input, `p2' is not run.
 *)
 let alt (p1 : 'a t susp) (p2 : 'a t susp) : 'a t =
-  bind here @@ fun Loc.({ offset }) ->
+  bind here @@ fun Loc.({ offset; _ }) ->
   bind (handle @@ force p1) @@ function
   | Result.Ok x -> pure x
-  | Result.Error (l, _, _) when Loc.Span.(l.offset) = offset -> p2 ()
+  | Result.Error (l, _, _) when (l.offset) = offset -> p2 ()
   | Result.Error (_, `non_fatal, _) -> p2 ()
-  | Result.Error (l, fatality, e) -> fail_at l e
+  | Result.Error (l, _fatality, e) -> fail_at l e
 
 let alt' p1 p2 = alt (fun _ -> p1) (fun _ -> p2)
 
@@ -246,14 +246,14 @@ let peek : char t = {
 (* Advances the parser state by one character. *)
 let next_char : unit t = {
   label = Anon;
-  run = fun r s fail return -> return (State.map_loc Loc.next_char s) ()
+  run = fun _r s _fail return -> return (State.map_loc Loc.next_char s) ()
 }
 
 (* Advances the parser state by one line.
    Must only be called when the character in consideration is a newline. *)
 let next_line : unit t = {
   label = Anon;
-  run = fun r s fail return -> return (State.map_loc Loc.next_line s) ()
+  run = fun _r s _fail return -> return (State.map_loc Loc.next_line s) ()
 }
 
 (* Consumes and returns the character at the current position if it satisfies a predicate. *)
@@ -406,7 +406,6 @@ let lident =
 (* ***** Complex syntax parsers ***** *)
 
 open BasicSyntax
-open Syntax
 open Syntax.External
 
 let prim_of_op = function
@@ -461,7 +460,7 @@ let literal : (Loc.Span.t * literal) t =
   choice [string_lit; bool_lit; int_lit; char_lit]
 
 let rec typ () : Type.t t =
-  let rec named () =
+  let named () =
     label "named type" @@
     bind uident @@ fun (loc, a) ->
     bind (many @@ force atomic_typ) @@ fun ts ->
@@ -567,7 +566,7 @@ let rec term () : Term.t t =
     bind (force term) @@ fun e2 ->
     pure @@ Term.Let (
       Loc.Span.join loc_let @@ Term.loc_of_tm e2,
-      Syntax.(if rec_opt = None then NonRec else Rec),
+      (if rec_opt = None then NonRec else Rec),
       (loc_x, x),
       e1,
       e2
@@ -610,7 +609,7 @@ let rec term () : Term.t t =
     pure @@ fold_ops t ts
   in
   let literal_term () = map (fun (loc, lit) -> Term.Lit (loc, lit)) literal in
-  let rec term8 () = choice [literal_term; app; fun _ -> parenthesized @@ force term] in
+  let term8 () = choice [literal_term; app; fun _ -> parenthesized @@ force term] in
   let rec term7 () = parse_op op_at term8 term7 in
   let rec term6 () = parse_op op_star term7 term6 in
   let rec term5 () = parse_op op_plus term6 term5 in
@@ -623,7 +622,7 @@ let rec term () : Term.t t =
 let tm_decl : Decl.tm t =
   bind kw_def @@ fun (loc_def, _) ->
   bind (optional kw_rec) @@ fun rec_flag ->
-  bind lident @@ fun (loc_name, name) ->
+  bind lident @@ fun (_loc_name, name) ->
   bind (optional (op_colon &> force typ)) @@ fun typ ->
   bind op_eq @@ fun _ ->
   bind (force term) @@ fun body ->
@@ -655,7 +654,9 @@ let tp_decl : Decl.tp t =
       name;
       tvar_binders = List.map snd xs;
       constructors;
-      loc = Loc.Span.join loc_type @@ last constructors (fun Decl.({ loc }) -> loc) (fun () -> loc_eq)
+      loc =
+          Loc.Span.join loc_type @@
+          last constructors (fun Decl.({ loc; _ }) -> loc) (fun () -> loc_eq)
     })
 
 let decl : Decl.t t =

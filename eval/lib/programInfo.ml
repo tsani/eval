@@ -63,23 +63,23 @@ let rec arity : I.Term.t -> int = function
         * The arity of every constructor and top-level function.
         * Each constructor gets associated with an integer tag (its index +1) *)
 let collect : I.Decl.program -> t =
-    let rec go = List.fold_left begin fun info -> function
-        | I.Decl.(TpDecl { constructors }) ->
+    List.fold_left
+        begin fun info -> function
+        | I.Decl.(TpDecl { constructors; _ }) ->
             { info with ctors =
                 constructors
-                |> List.map (fun I.Decl.({ name; fields }) -> (name, List.length fields))
+                |> List.map (fun I.Decl.({ name; fields; _ }) -> (name, List.length fields))
                 |> List.fold_left
                     (fun (i, ctors) (c, n) ->
                         (i + 1, CtorMap.add c ({ tag = i; arity = n }) ctors))
                     (0, info.ctors)
                 |> snd
             }
-        | I.Decl.(TmDecl { body = None }) ->
+        | I.Decl.(TmDecl { body = None; _ }) ->
             Util.invariant "[programInfo] all function bodies are defined"
-        | I.Decl.(TmDecl { body = Some body; name; rec_flag }) ->
+        | I.Decl.(TmDecl { body = Some body; name; _ }) ->
             let n = arity body in
             let kind = if n = 0 then `well_known else `func in
             { info with refs = RefMap.add name (new_ref_spec kind n) info.refs }
         end
-    in
-    go empty
+        empty

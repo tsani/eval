@@ -1,7 +1,5 @@
 (* All Eval syntax and intermediate representations. *)
 
-open BasicSyntax
-
 (** External syntax is essentially the representation stored in text files. *)
 module External = Synext
 

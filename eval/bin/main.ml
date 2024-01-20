@@ -1,3 +1,5 @@
+open Lib
+
 module P = Pretty
 
 open Format

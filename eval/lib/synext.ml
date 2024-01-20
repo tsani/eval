@@ -96,12 +96,12 @@ module Decl = struct
 
   (** A toplevel declaration either introduces a named term, or a named type. *)
   type t =
-    | TpDecl of tp
-    | TmDecl of tm
+      | TpDecl of tp
+      | TmDecl of tm
 
   let loc_of_decl = function
-    | TpDecl { loc } -> loc
-    | TmDecl { loc } -> loc
+      | TpDecl { loc; _ } -> loc
+      | TmDecl { loc; _ } -> loc
 
   (** A program is a sequence of declarations. *)
   type program = t list

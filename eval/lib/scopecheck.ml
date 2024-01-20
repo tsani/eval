@@ -240,14 +240,14 @@ let rec check_program (tps : (string * int) list) (ctors : (string * int) list) 
   | [] -> Result.ok []
   | d :: ds ->
     Result.bind (check_decl tps ctors tms d) @@ fun d -> match d with
-    | I.Decl.(TpDecl { name; tvar_binders; constructors }) ->
+    | I.Decl.(TpDecl { name; tvar_binders; constructors; _ }) ->
       Result.bind begin
         check_program
           ((name, List.length tvar_binders) :: tps)
-          (List.map (fun I.Decl.({ name; fields }) -> (name, List.length fields)) constructors @ ctors)
+          (List.map (fun I.Decl.({ name; fields; _ }) -> (name, List.length fields)) constructors @ ctors)
           tms
           ds
       end @@ fun ds -> Result.ok @@ d :: ds
-      | I.Decl.(TmDecl { name }) ->
+      | I.Decl.(TmDecl { name; _ }) ->
         Result.bind (check_program tps ctors (name :: tms) ds) @@ fun ds ->
         Result.ok @@ d :: ds

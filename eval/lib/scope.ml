@@ -14,7 +14,7 @@ let extend sco x = x :: sco
 (* Extends a scope with a binding only if it's recursive. *)
 let extend_rec rec_flag = match rec_flag with
   | Rec -> extend
-  | NonRec -> fun sco x -> sco
+  | NonRec -> fun sco _x -> sco
 let lookup : t -> index -> entry option = lookup_var
 
 let extend_many (s : t) (xs : entry list) : t = List.fold_left extend s xs
@@ -22,7 +22,7 @@ let extend_many (s : t) (xs : entry list) : t = List.fold_left extend s xs
 let index_of x : t -> index option =
   let rec go i = function
     | [] -> None
-    | x' :: xs when x' = x -> Some i
+    | x' :: _ when x' = x -> Some i
     | _ :: xs -> go (i+1) xs
   in
   go 0

@@ -45,7 +45,7 @@ let print_var scope ppf i = match lookup_var scope i with
   | None -> fprintf ppf "!%d" i
   | Some x -> fprintf ppf "%s" x
 
-let rec print_ctx (ppf : formatter) (ctx : Ctx.t) : unit =
+let print_ctx (ppf : formatter) (ctx : Ctx.t) : unit =
   pp_print_list ~pp_sep: comma_space begin fun ppf (i, t) ->
     fprintf ppf "@[<hv 2>v %d :@ %a@]" i begin fun ppf (x, tpsc) ->
       fprintf ppf "%s :@ %a" x (print_tp_sc 0) tpsc
@@ -202,22 +202,22 @@ let print_evaluated_program ppf (sg_t, sg_e, program) =
   let open Format in
   let open Syntax.Internal in
   let print_tvar_binders =
-    pp_print_list ~pp_sep: (fun ppf _ -> ()) (fun ppf x -> fprintf ppf " %s" x)
+    pp_print_list ~pp_sep: (fun _ _ -> ()) (fun ppf x -> fprintf ppf " %s" x)
   in
-  let print_ctor ppf Decl.({ name; fields }) =
+  let print_ctor ppf Decl.({ name; fields; _ }) =
     fprintf ppf "@ | @[<hv 2>%s@ @[%a@]@]"
       name
       (pp_print_list ~pp_sep: pp_print_space (print_tp 10)) fields
   in
   let print_decl ppf = function
-    | Decl.(TpDecl { tvar_binders; name; constructors }) ->
+    | Decl.(TpDecl { tvar_binders; name; constructors; _ }) ->
       fprintf ppf "@[<hv 2>type %s%a =%a@]"
         name
         print_tvar_binders tvar_binders
         (pp_print_list ~pp_sep: pp_print_cut print_ctor) constructors
-    | Decl.(TmDecl { name; rec_flag }) ->
+    | Decl.(TmDecl { name; _ }) ->
       begin match Signature.lookup_tm' name sg_t, Signature.lookup_tm' name sg_e with
-      | Decl.({ typ = Some (_, typ); }, { body = Some body }) ->
+      | Decl.({ typ = Some (_, typ); _ }, { body = Some body; _ }) ->
         fprintf ppf "@[<hv 2>val %s : @[%a@] =@ @[%a@]@]"
           name
           (print_tp 0) typ

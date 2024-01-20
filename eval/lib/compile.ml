@@ -5,7 +5,6 @@ open BasicInstruction
 open Syntax.Low
 open Lincode
 open Instruction
-open RuntimeInfo
 
 let basic i = Basic i
 
@@ -117,15 +116,15 @@ let rec pattern
     let open Compiler in
     match pat with
     | WildcardPattern ->
-        pure @@ Builder.chunk Instruction.[
+        pure @@ Builder.chunk [
             basic @@ Pop (`param, 0);
         ]
     | VariablePattern ->
-        pure @@ Builder.chunk Instruction.[
+        pure @@ Builder.chunk [
             basic @@ Move `param_to_return;
         ]
     | LiteralPattern (IntLit n) ->
-        pure @@ Builder.chunk Instruction.([
+        pure @@ Builder.chunk ([
             basic @@ Push (`param, `integer (Int64.neg n));
             basic @@ Prim Prim.Plus;
             basic @@ Jump (`nonzero, failure);
@@ -182,7 +181,7 @@ let rec term (t : Term.t) : builder Compiler.t =
         (* Why in reverse? To uphold the calling convention, we need to emit the code to generate
            the arguments from right to left. However, `app` traverses the spine from left to right
            which is the simplest way to get the correct shifting of the variable renaming. *)
-    | Term.Let (Rec, t1, t2) -> failwith "recursive let bindings not implemented"
+    | Term.Let (Rec, _t1, _t2) -> failwith "recursive let bindings not implemented"
     | Term.Let (NonRec, t1, t2) ->
         bind (term t1) @@ fun p1 ->
         bind (with_ren Ren.extended @@ term t2) @@ fun p2 ->
@@ -227,7 +226,7 @@ let rec term (t : Term.t) : builder Compiler.t =
         ])
 
     | Term.MkClo (theta, arity, f) ->
-        bind (lookup_ref f) @@ fun ProgramInfo.({ address }) ->
+        bind (lookup_ref f) @@ fun ProgramInfo.({ address; _ }) ->
         let n = List.length theta in
         bind (env_ren theta) @@ fun p ->
             pure @@ Builder.cats [
@@ -247,7 +246,7 @@ and app n (tS : Term.spine) (acc : builder) (tH : Term.head) : builder Compiler.
                 acc;
                 pVar;
                 if n > 0 then
-                    chunk Instruction.[
+                    chunk [
                         basic @@ Push (`return, `integer (Int64.of_int n));
                         basic @@ Call `dynamic;
                     ]
@@ -260,7 +259,8 @@ and app n (tS : Term.spine) (acc : builder) (tH : Term.head) : builder Compiler.
                 acc;
                 (single @@ basic @@ match ref_spec.kind with
                     | `func -> Push (`param, `address ref_spec.address)
-                    | `well_known -> Load (`well_known f));
+                    | `well_known -> Load (`well_known f)
+                    | `closure_body -> failwith "[compile] XXX closure_body here?");
                 if ref_spec.ProgramInfo.arity > 0
                 then single @@ basic @@ Call (
                     call_mode_of_ref ref_spec @@ ref_spec.ProgramInfo.arity
@@ -301,7 +301,7 @@ let decl (ctx : Ctx.t) (pgm : Program.t) : Decl.tm -> Program.t =
         (* now this depends on... whether the term being defined is a *pure* function or not
            Only pure functions have nonzero arity.
            *)
-        let (s', p) =
+        let (_s', p) =
             term body { ctx with var_ren = List.rev @@ Ren.id arity } State.initial
             (* Why is the initial renaming reversed? It might not have been if I weren't so dumb.
                Consider that `fun x y z -> ...` has a body `...` that uses indices 0, 1, 2 to refer

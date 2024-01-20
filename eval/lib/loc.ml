@@ -58,8 +58,8 @@ end
 
 type span = Span.t
 
-let print ppf { line; column; filename } =
+let print ppf { line; column; filename; _ } =
   Format.fprintf ppf "%s:%d:%d" filename line column
 
-let print_short ppf { line; column } =
+let print_short ppf { line; column; _ } =
   Format.fprintf ppf "%d:%d" line column

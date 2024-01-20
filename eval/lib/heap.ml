@@ -22,7 +22,6 @@ module Runtime = struct
         whose body has been mutated and in which the next free address is updated.
         Returns the address at which the values were written too. *)
     let write_next_free (values : value list) (r : t) : addr * t =
-        (** Converts the heap object to a list of values. *)
         let a = r.next_free in
         Body.write_at (Int64.to_int r.next_free) values r.body;
         (a, { r with next_free = Int64.add r.next_free @@ Int64.of_int (List.length values) })
@@ -63,13 +62,16 @@ module Object = struct
             get_int64_ne b 0
 
         let decode (hdr : t) : Kind.t * int list =
-            (** Decomposes a value into 8 8-bit integers. *)
+            (* Decomposes a value into 8 8-bit integers. *)
             let decompose_value (v : value) : char list =
                 let b = Bytes.make 8 '\x00' in
                 Bytes.set_int64_ne b 0 v;
                 List.init 8 (fun i -> Bytes.get b i)
             in
-            let tag :: counts = decompose_value hdr in
+            let (tag, counts) = match decompose_value hdr with
+              | tag :: counts -> (tag, counts)
+              | _ -> Util.invariant "[heap] decompose_value succeeds"
+            in
             (Kind.of_tag tag, List.map Char.code counts)
     end
 
@@ -121,10 +123,10 @@ module Object = struct
     let load_blob (pos : addr) (heap : Body.t) : spec -> blob =
         let pos = Int64.to_int pos in
         function
-        | Con { arity } -> Array.init arity (fun i -> heap.(pos + 1 + i))
-        | Clo { env_size } -> Array.init env_size (fun i -> heap.(pos + 2 + i))
-        | Pap { held } -> Array.init held (fun i -> heap.(pos + 2 + i))
-        | Arr { capacity } -> Array.init capacity (fun i -> heap.(pos + 1 + i))
+        | Con { arity; _ } -> Array.init arity (fun i -> heap.(pos + 1 + i))
+        | Clo { env_size; _ } -> Array.init env_size (fun i -> heap.(pos + 2 + i))
+        | Pap { held; _ } -> Array.init held (fun i -> heap.(pos + 2 + i))
+        | Arr { capacity; _ } -> Array.init capacity (fun i -> heap.(pos + 1 + i))
 
     (** Decodes a heap object from a heap at the given address. *)
     let load_spec (pos : addr) (heap : Body.t) : spec =
@@ -134,13 +136,14 @@ module Object = struct
         | CLO, env_size :: arity :: _ -> Clo { env_size; arity; body = heap.(pos + 1) }
         | PAP, held :: missing :: _ -> Pap { held; missing; clo = heap.(pos + 1) }
         | ARR, capacity :: length :: _ -> Arr { capacity; length }
+        | _ -> Util.invariant "[heap] load_spec succeeds"
 
     (** Calculates the size (as a count of values) of the given heap object. *)
     let size : spec -> int = function
-        | Con { arity } -> 1 + arity
-        | Clo { env_size } -> 2 + env_size
-        | Pap { held; missing } -> 2 + held
-        | Arr { capacity } -> 1 + capacity
+        | Con { arity; _ } -> 1 + arity
+        | Clo { env_size; _ } -> 2 + env_size
+        | Pap { held; _ } -> 2 + held
+        | Arr { capacity; _ } -> 1 + capacity
         (* Everything gets a +1 for the header, then Clo and Pap get an extra +1 since they hold an
            address in addition to their fields. *)
 

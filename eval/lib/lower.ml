@@ -20,7 +20,6 @@
 *)
 
 open BasicSyntax
-open Syntax
 
 module I = Syntax.Internal
 module L = Syntax.Low
@@ -60,11 +59,11 @@ module CloBody = struct
         let new_map = { map = Map.add name spec m.map; next = m.next + 1 } in
         (name, new_map)
 
-    let lookup name { map } = Map.find_opt name map
+    let lookup name { map; _ } = Map.find_opt name map
 
     let remove name { map; next } = { map = Map.remove name map; next }
 
-    let to_seq { map } = Map.to_seq map
+    let to_seq { map; _ } = Map.to_seq map
 end
 
 (* Lowering is stateful since its component transformations are as well:
@@ -128,13 +127,13 @@ module Loco = struct
         ({ s with fns } , name)
 
     (** Deletes a function from the current mapping, returning its description. *)
-    let remove_function (f : tm_name) : CloBody.spec t = fun ctx s ->
+    let remove_function (f : tm_name) : CloBody.spec t = fun _ctx s ->
         match CloBody.lookup f s.fns with
         | None -> Util.invariant "[lower] any function to remove was already added"
         | Some d -> ({ s with fns = CloBody.remove f s.fns }, d)
 
     (** Adds a constant to the constant table, returning a fresh tag for it. *)
-    let add_constant (c : Constant.spec) : Constant.tag t = fun ctx s ->
+    let add_constant (c : Constant.spec) : Constant.tag t = fun _ctx s ->
         let tag, cts = Constant.add c s.cts in
         ({ s with cts }, tag)
 
@@ -155,12 +154,11 @@ module Loco = struct
     let lookup_ref f : ProgramInfo.ref_spec t = fun ctx s ->
         (s, ProgramInfo.lookup_ref f ctx.info)
 
-    let get_env_ren : RawER.t t = fun w s -> (s, s.theta)
+    let get_env_ren : RawER.t t = fun _w s -> (s, s.theta)
 
     let put_env_ren (theta : RawER.t) : unit t = fun _ s -> { s with theta }, ()
 
     let with_ref_arity (f : tm_name) kind (n : arity) (m : 'a t) : 'a t = fun ctx s ->
-        let open ProgramInfo in
         m { ctx with info = ProgramInfo.add_new_ref f (kind, n) ctx.info } s
 end
 
@@ -255,11 +253,11 @@ let eta_expand tH n tS =
     (* run out of arity and spine: generate the eta-expanded application *)
     | 0, [] -> mk_fns (mk_app k tS_vars)
     (* spine but no arity: no eta-expansion possible (happens in higher-order situations) *)
-    | 0, t :: tS -> mk_app 0 []
+    | 0, _t :: _tS -> mk_app 0 []
     (* arity but no spine: extend spine with a var and add an abstraction *)
     | n, [] -> go (n-1) (k+1) [] (var k :: tS_vars) (add_fn mk_fns)
     (* spine and arity: keep counting down *)
-    | n, t :: tS -> go (n-1) k tS [] mk_fns
+    | n, _t :: tS -> go (n-1) k tS [] mk_fns
     in
     go n 0 tS [] (fun body -> body)
 
@@ -298,7 +296,7 @@ let rec term : I.Term.t -> L.Term.t or_constant Loco.t =
     let open Loco in
     (* Lower a term that is KNOWN to be a function. *)
     let func e : L.Term.t or_constant Loco.t =
-        let xs, e, w' = I.Term.collapse_funs e in
+        let _xs, e, w' = I.Term.collapse_funs e in
         if w' = 0 then Util.invariant "[lower] [func] must be applied to a function";
         (* w': the count of funs is the watermark to use within the function body *)
         bind (er_pushed @@ with_watermark w' @@ term e) @@ fun (theta, e') ->
@@ -311,14 +309,14 @@ let rec term : I.Term.t -> L.Term.t or_constant Loco.t =
         bind (spine tS) @@ fun tS ->
         match tH with
         (* check if all tS are constant to form a bigger constant *)
-        | L.Term.Const c -> failwith "todo: bigger constants from constructors"
+        | L.Term.Const _c -> failwith "todo: bigger constants from constructors"
         | _ -> pure @@ `dyn (L.Term.App (tH, List.map to_term tS))
     in
     function
     | I.Term.Lit (_, lit) ->
         bind (literal lit) @@ fun ct -> pure @@ `constant ct
     | I.Term.Fun _ as e -> func e
-    | I.Term.Let (_, rec_flag, (_, x), e1, e2) ->
+    | I.Term.Let (_, rec_flag, (_, _x), e1, e2) ->
         bind (bump_of_rec_flag rec_flag @@ term e1) @@ fun e1' ->
         bind (bumped_watermark 1 @@ term e2) @@ fun e2' ->
         pure @@ `dyn (L.Term.Let (rec_flag, to_term e1', to_term e2'))
@@ -326,13 +324,14 @@ let rec term : I.Term.t -> L.Term.t or_constant Loco.t =
         bind (term e) @@ fun e' ->
         bind (traverse case cases) @@ fun cases' ->
         pure @@ `dyn (L.Term.Match (to_term e', cases'))
-    | I.Term.App (loc, tH, tS) as e ->
+    | I.Term.App (_loc, tH, tS) ->
         bind (arity_of_head tH) @@ function
         | `unknown -> app tH tS
         | `known n ->
             match eta_expand tH n tS with
             | I.Term.Fun _ as e' -> func e'
             | I.Term.App (_, tH, tS) -> app tH tS
+            | _ -> Util.invariant "[eta_expand] outcome is always a Fun or App"
 
 and case : I.Term.case -> L.Term.case Loco.t =
     let open Loco in function
@@ -345,12 +344,10 @@ and case : I.Term.case -> L.Term.case Loco.t =
 and spine (tS : I.Term.spine) : L.Term.t or_constant list Loco.t = Loco.traverse term tS
 
 let tm_decl : I.Term.t I.Decl.tm -> (ProgramInfo.decl_kind * L.Decl.tm) Loco.t =
-    let var i = L.Term.(App (Var (`bound i), [])) in
-    let rec gen_spine n = if n = 0 then [] else var (n-1) :: gen_spine (n-1) in
     let open Loco in
     function
-    | I.Decl.({ body = None }) -> failwith "todo"
-    | I.Decl.({ name; rec_flag; body = Some body }) ->
+    | I.Decl.({ body = None; _ }) -> failwith "todo"
+    | I.Decl.({ name; rec_flag; body = Some body; _ }) ->
         let kind =
             if is_static_function body
             then `func
@@ -360,8 +357,8 @@ let tm_decl : I.Term.t I.Decl.tm -> (ProgramInfo.decl_kind * L.Decl.tm) Loco.t =
         match to_term x with
         | L.Term.MkClo (theta, _, _) when not (ER.is_empty theta) ->
             Util.invariant "[lower] top-level closure is trivial"
-        | L.Term.MkClo (theta, n, f) ->
-            bind (remove_function f) @@ fun { body } ->
+        | L.Term.MkClo (_, n, f) ->
+            bind (remove_function f) @@ fun { body; _ } ->
             pure @@ (
                 `func,
                 L.Decl.({
@@ -403,7 +400,7 @@ let declare_closure_bodies (clo_bodies : CloBody.map) : L.Decl.tm list =
     |> List.of_seq
 
 let rec program : ProgramInfo.t ->  I.Decl.program -> ProgramInfo.t * L.Decl.program =
-    let open Loco in fun info -> function
+    fun info -> function
     | [] -> (info, [])
     | d :: ds -> match d with
         | I.Decl.(TpDecl _) -> program info ds

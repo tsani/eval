@@ -1,2 +1,40 @@
 (library
- (name eval))
+ (name eval)
+ (public_name eval)
+ (modules
+   synint
+   synext
+   synlow
+   runtimeInfo
+   util
+   basicSyntax
+   util
+   loc
+   oSet
+   scope
+   constant
+   basicInstruction
+   pretty
+   prettyCommon
+   prettyInternal
+   prettyLow
+   prettyLincode
+   prettyBytecode
+   prettyBasicInstruction
+   programInfo
+   result
+   heap
+   tMVar
+   unify
+   interpret
+   lincode
+   bytecode
+   dlist
+   parser
+   scopecheck
+   typecheck
+   syntax
+   debug
+   lower
+   compile
+   link))

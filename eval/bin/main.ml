@@ -1,4 +1,4 @@
-open Lib
+open Eval
 
 module P = Pretty
 
@@ -27,7 +27,7 @@ let main () =
             fprintf ppf "Scopechecking succeeded.@.";
             match Typecheck.check_program epf Syntax.Internal.Signature.empty program with
             | Result.Error report -> Typecheck.Error.print_report epf report;
-            | Result.Ok sg_t ->
+            | Result.Ok _sg_t ->
                 fprintf epf "@.";
                 fprintf ppf "Typechecking succeeded.@.";
                 (* match Eval.(program (State.empty epf)) program with
@@ -53,7 +53,7 @@ let main () =
                     let code = Link.program info pgm in
                     fprintf ppf "Linking succeeded.@.";
                     fprintf ppf "%a@." P.Bytecode.print_linked_program code;
-                    let (final_state, status) =
+                    let (final_state, _status) =
                         Interpret.(program Ctx.({ code = Array.of_list code }) (State.initial ()))
                     in
                     fprintf ppf "@[<v 2>Interpretation succeeded.@,@[<v>%a@]@]@."

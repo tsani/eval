@@ -192,22 +192,26 @@ module Exec = struct
     type exec = status Interpreter.t
     open Interpreter
 
+    let (let*) = bind
+    let (&) a b = let* _ = a in b
+    let upon c a = if c then (a & pure ()) else pure ()
+
     let call : call_mode -> exec = function
         | `func _n ->
-            bind (pop `param 0) @@ fun code_addr ->
-            bind get @@ fun s ->
-            bind (push `return s.pc) @@ fun _ ->
-            bind (jump_abs code_addr) @@ fun _ ->
+            let* code_addr = pop `param 0 in
+            let* s = get in
+            push `return s.pc &
+            jump_abs code_addr &
             pure `running
 
         | `closure _n ->
-            bind (pop `param 0) @@ fun clo_addr ->
-            bind get @@ fun s ->
-            bind (push `return s.ep) @@ fun _ ->
-            bind (push `return s.pc) @@ fun _ ->
-            bind (set_ep (Int64.add clo_addr 2L)) @@ fun _ ->
-            bind (deref clo_addr 1) @@ fun clo_body_addr ->
-            bind (jump_abs clo_body_addr) @@ fun _ ->
+            let* clo_addr = pop `param 0 in
+            let* s = get in
+            push `return s.ep &
+            push `return s.pc &
+            set_ep (Int64.add clo_addr 2L) &
+            let* clo_body_addr = deref clo_addr 1 in
+            jump_abs clo_body_addr &
             pure `running
 
         | `pap _ -> failwith "[interpret] [call] `pap TODO"
@@ -219,50 +223,47 @@ module Exec = struct
             | arg_count ->
                 let arg_count = Int64.to_int arg_count in
                 (* otherwise there are more arguments to apply *)
-                bind (pop `param 0) @@ fun obj_addr ->
+                let* obj_addr = (pop `param 0) in
                 bind (load_heap_object obj_addr) @@
                 let open Heap.Object in function
                 | Clo { arity; _ } when arg_count < arity ->
-                    bind (pops arg_count `param 0) @@ fun args ->
-                    bind (store_heap_object
-                        ( Pap { held = arg_count; missing = arity - arg_count; clo = obj_addr; }
-                        , Array.of_list args
-                        )
-                    ) @@ fun pap_addr ->
-                    bind (push `param pap_addr) @@ fun _ ->
+                    let* args = (pops arg_count `param 0) in
+                    let* pap_addr = store_heap_object (
+                        Pap { held = arg_count; missing = arity - arg_count; clo = obj_addr; },
+                        Array.of_list args)
+                    in
+                    push `param pap_addr &
                     pure `running
                 | Clo { arity; body; _ } -> (* then arg_count is >= arity *)
-                    bind get @@ fun s ->
-                    bind (push `return (Int64.of_int @@ arg_count - arity)) @@ fun _ ->
-                    bind (push `return s.ep) @@ fun _ ->
-                    bind (push `return @@ Int64.sub s.pc 1L) @@ fun _ ->
-                    bind (set_ep (Int64.add obj_addr 2L)) @@ fun _ ->
-                    bind (jump_abs body) @@ fun _ ->
+                    let* s = get in
+                    push `return (Int64.of_int @@ arg_count - arity) &
+                    push `return s.ep &
+                    push `return @@ Int64.sub s.pc 1L &
+                    set_ep (Int64.add obj_addr 2L) &
+                    jump_abs body &
                     pure `running
                 | Pap { held; missing; clo } as spec when arg_count < missing ->
-                    bind (pops arg_count `param 0) @@ fun args ->
-                    bind (load_associated_blob obj_addr spec) @@ fun blob ->
-                    bind (store_heap_object
-                        ( Pap { held = held + arg_count; missing = missing - arg_count; clo }
-                        , Array.(append blob (of_list args))
-                        )
-                    ) @@ fun pap_addr ->
-                    bind (push `param pap_addr) @@ fun _ ->
+                    let* args = (pops arg_count `param 0) in
+                    let* blob = (load_associated_blob obj_addr spec) in
+                    let* pap_addr = store_heap_object (
+                        Pap { held = held + arg_count; missing = missing - arg_count; clo },
+                        Array.(append blob (of_list args)))
+                    in
+                    push `param pap_addr &
                     pure `running
                 | Pap { missing; clo; _ } as spec ->
                     (* there are enough values to call the function now, so we load its saved arguments
                        onto the stack. They were saved _in order_, so we have to load them in reverse
                        to arrange that the first argument ends up on the top of the stack. *)
-                    bind (load_associated_blob obj_addr spec) @@ fun blob ->
-                    bind (blob |> Array.to_list |> List.rev |> iter (fun v -> push `param v)) @@
-                    fun _ ->
-                    bind get @@ fun s ->
-                    bind (push `return (Int64.of_int @@ missing - arg_count)) @@ fun _ ->
-                    bind (push `return s.ep) @@ fun _ ->
-                    bind (push `return @@ Int64.sub s.pc 1L) @@ fun _ ->
-                    bind (set_ep (Int64.add clo 2L)) @@ fun _ ->
-                    bind (deref clo 1) @@ fun clo_body_addr ->
-                    bind (jump_abs clo_body_addr) @@ fun _ ->
+                    let* blob = (load_associated_blob obj_addr spec) in
+                    (blob |> Array.to_list |> List.rev |> iter (push `param)) &
+                    let* s = get in
+                    push `return (Int64.of_int @@ missing - arg_count) &
+                    push `return s.ep &
+                    push `return @@ Int64.sub s.pc 1L &
+                    set_ep (Int64.add clo 2L)&
+                    let* clo_body_addr = (deref clo 1) in
+                    jump_abs clo_body_addr &
                     pure `running
 
                 (* The following cases are ruled out by typechecking. *)
@@ -274,17 +275,17 @@ module Exec = struct
         let clean_params n = iter (fun () -> void @@ pop `param 1) (List.init n @@ fun _ -> ()) in
         function
         | `func n ->
-            bind (clean_params n) @@ fun _ ->
-            bind (pop `return 0) @@ fun addr ->
-            bind (jump_abs addr) @@ fun _ ->
+            clean_params n &
+            let* addr = pop `return 0 in
+            jump_abs addr &
             pure `running
 
         | `closure n ->
-            bind (clean_params n) @@ fun _ ->
-            bind (pop `return 0) @@ fun ret_addr ->
-            bind (pop `return 0) @@ fun ep ->
-            bind (set_ep ep) @@ fun _ ->
-            bind (jump_abs ret_addr) @@ fun _ ->
+            clean_params n &
+            let* ret_addr = (pop `return 0) in
+            let* ep = (pop `return 0) in
+            set_ep ep &
+            jump_abs ret_addr &
             pure `running
 
     let mkclo (env_size, arity) : exec =
@@ -292,82 +293,78 @@ module Exec = struct
         | [] -> Util.invariant "[interpret] [mkclo] pops at least 1 item"
         | (body :: env) ->
             let obj = (Heap.Object.(Clo { env_size; arity; body }), Array.of_list env) in
-            bind (store_heap_object obj) @@ fun addr ->
-            bind (push `param addr) @@ fun _ ->
+            let* addr = (store_heap_object obj) in
+            push `param addr &
             pure `running
 
     let const (tag, arity) : exec =
-        bind (pops arity `param 0) @@ fun fields ->
+        let* fields = (pops arity `param 0) in
         let obj = (Heap.Object.(Con { tag; arity }), Array.of_list fields) in
-        bind (store_heap_object obj) @@ fun addr ->
-        bind (push `param addr) @@ fun _ ->
+        let* addr = (store_heap_object obj) in
+        push `param addr &
         pure `running
 
     let load mode : exec =
-        bind get @@ fun s ->
+        let* s = get in
         match mode with
         | `well_known name -> begin match WK.find_opt name s.well_knowns with
-            | Some x -> bind (push `param x) @@ fun _ -> pure `running
+            | Some x -> push `param x & pure `running
             | None -> pure `loop
         end
         | `param n ->
-            bind (peek `param n) @@ fun v ->
-            bind (push `param v) @@ fun _ ->
+            let* v = peek `param n in
+            push `param v &
             pure `running
         | `env i ->
-            bind get @@ fun s ->
-            bind (deref s.ep i) @@ fun v ->
-            bind (push `param v) @@ fun _ ->
+            let* s = get in
+            let* v = (deref s.ep i) in
+            push `param v &
             pure `running
         | `constructor ->
-            bind (pop `param 0) @@ fun addr ->
-            bind (load_heap_object addr) @@ fun obj ->
+            let* addr = pop `param 0 in
+            let* obj = load_heap_object addr in
             let Heap.Object.({ tag; _ }) = Heap.Object.as_con obj in
-            bind (push `param @@ Int64.of_int tag) @@ fun _ ->
+            push `param (Int64.of_int tag) &
             pure `running
         | `field n ->
-            bind (pop `param 0) @@ fun addr ->
-            bind (load_constructor_field addr n) @@ fun v ->
-            bind (push `param v) @@ fun _ ->
+            let* addr = (pop `param 0) in
+            let* v = (load_constructor_field addr n) in
+            push `param v &
             pure `running
 
     let store name : exec =
-        bind (pop `param 0) @@ fun v ->
-        bind (modify (fun s -> { s with well_knowns = WK.add name v s.well_knowns })) @@ fun _ ->
+        let* v = (pop `param 0) in
+        modify (fun s -> { s with well_knowns = WK.add name v s.well_knowns }) &
         pure `running
 
-    let move mode : exec = bind (move mode) @@ fun _ -> pure `running
+    let move mode : exec = move mode & pure `running
 
     let prim p : exec =
         let open Prim in
         match p with
         | Plus ->
-            bind (pop `param 0) @@ fun a ->
-            bind (pop `param 0) @@ fun b ->
-            bind (push `param (Int64.add a b)) @@ fun _ ->
+            let* a = (pop `param 0) in
+            let* b = (pop `param 0) in
+            push `param (Int64.add a b)&
             pure `running
         | Neg ->
-            bind (pop `param 0) @@ fun a ->
-            bind (push `param (Int64.neg a)) @@ fun _ ->
+            let* a = (pop `param 0) in
+            push `param (Int64.neg a) &
             pure `running
         | _ -> failwith "todo prims"
 
     let jump (mode, offset) : exec =
         match mode with
         | `zero ->
-            bind (pop `param 0) @@ fun v ->
-            if Int64.zero = v then
-                bind (jump_rel (offset - 1)) @@ fun _ -> pure `running
-            else
-                pure `running
+            let* v = (pop `param 0) in
+            upon (Int64.zero = v) @@ jump_rel (offset - 1) &
+            pure `running
         | `nonzero ->
-            bind (pop `param 0) @@ fun v ->
-            if Int64.zero <> v then
-                bind (jump_rel (offset - 1)) @@ fun _ -> pure `running
-            else
-                pure `running
+            let* v = (pop `param 0) in
+            upon (Int64.zero <> v) @@ jump_rel (offset - 1) &
+            pure `running
         | `unconditional ->
-            bind (jump_rel (offset - 1)) @@ fun _ -> pure `running
+            jump_rel (offset - 1) & pure `running
         (* why -1? Consider `jump 1; .L1; prim plus`. This gets numbered as
                0. jump L1
                1. prim plus
@@ -380,16 +377,14 @@ module Exec = struct
            _after_ it. Therefore `jump unconditional 1` is equivalent to a no-op and
            `jump unconditional 0` is an infinite loop. *)
 
-    let pop (stk, offset) : exec =
-        bind (pop stk offset) @@ fun _ ->
-        pure `running
+    let pop (stk, offset) : exec = pop stk offset & pure `running
 
     let push (stack_mode, push_mode) : exec =
         let v = match push_mode with
             | `integer n -> n
             | `address r -> !r
         in
-        bind (push stack_mode v) @@ fun _ -> pure `running
+        push stack_mode v & pure `running
 
     let dispatch = function
         | Call call_mode -> call call_mode

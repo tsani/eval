@@ -59,7 +59,7 @@ let print_parser_label ppf lbl =
   let open Format in
   pp_print_list ~pp_sep: (fun ppf () -> fprintf ppf ",@ ") (fun ppf s -> fprintf ppf "%s" s) ppf (normalize_label lbl)
 
-module ParseError = struct
+module Error = struct
   type content =
     | NotExactly of { expected : string; actual : string }
     | Unsatisfied
@@ -92,7 +92,7 @@ end
 
 type 'a t = {
   label : parser_label;
-  run : 'r. Env.t -> State.t -> (ParseError.t -> 'r) -> (State.t -> 'a -> 'r) -> 'r;
+  run : 'r. Env.t -> State.t -> (Error.t -> 'r) -> (State.t -> 'a -> 'r) -> 'r;
 }
 
 let eof : unit t = {
@@ -102,7 +102,7 @@ let eof : unit t = {
     if s.State.here.Loc.offset = n then
       return s ()
     else
-      fail @@ ParseError.(make s.State.here `non_fatal @@ Expected (Label "end of input"))
+      fail @@ Error.(make s.State.here `non_fatal @@ Expected (Label "end of input"))
 }
 
 (** Labels the given parser exactly. *)
@@ -133,7 +133,7 @@ let trying (p : 'a t) : 'a t = {
 
 (** Runs a parser and checks whether it failed.
     This even allows recovering from fatal errors. *)
-let handle (p : 'a t) : (ParseError.t, 'a) Result.t t = {
+let handle (p : 'a t) : (Error.t, 'a) Result.t t = {
   label = Anon;
   run = fun r s _fail return -> p.run r s
       (fun e -> return s @@ Result.Error e)
@@ -152,18 +152,18 @@ let bind (p : 'a t) (k : 'a -> 'b t) : 'b t = {
 
 let seq2 p1 p2 = bind p1 @@ fun x1 -> bind p2 @@ fun x2 -> pure (x1, x2)
 
-let fail_raw (e : ParseError.t) : 'a t = {
+let fail_raw (e : Error.t) : 'a t = {
   label = Anon;
   run = fun _r _s fail _return -> fail e
 }
 
 (** Causes a parser error at the given location. *)
-let fail_at (loc : Loc.t) (e : ParseError.content) : 'a t =
+let fail_at (loc : Loc.t) (e : Error.content) : 'a t =
   bind env @@ fun r ->
-  fail_raw @@ ParseError.make loc (if r.Env.backtrack then `non_fatal else `fatal) e
+  fail_raw @@ Error.make loc (if r.Env.backtrack then `non_fatal else `fatal) e
 
 (* Causes a parser error at the current location. *)
-let fail (e : ParseError.content) : 'a t =
+let fail (e : Error.content) : 'a t =
   bind here @@ fun loc -> fail_at loc e
 
 let (&>) (p1 : 'a t) (p2 : 'b t) : 'b t =
@@ -229,7 +229,7 @@ let sep_by0 sep (p : 'a t) : 'a list t =
 
 let choice (ps : 'a t susp list) : 'a t =
   force @@ List.fold_right (fun p acc -> delay @@ alt p acc) ps
-    (fun () -> fail @@ ParseError.NoMoreChoices (OneOf (List.map (fun p -> (force p).label) ps)))
+    (fun () -> fail @@ Error.NoMoreChoices (OneOf (List.map (fun p -> (force p).label) ps)))
 
 let choice' ps = choice (List.map (fun p -> fun _ -> p) ps)
 
@@ -238,7 +238,7 @@ let peek : char t = {
   label = Anon;
   run = fun r s fail return ->
     if s.State.here.Loc.offset >= String.length r.Env.input then
-      fail ParseError.(make s.here `non_fatal @@ Unexpected (Label "end of input"))
+      fail Error.(make s.here `non_fatal @@ Unexpected (Label "end of input"))
     else
       return s @@ String.get Env.(r.input) s.State.here.Loc.offset
 }
@@ -260,7 +260,7 @@ let next_line : unit t = {
 let satisfy (p : char -> bool) : char t =
   bind peek @@ fun c ->
   match () with
-  | _ when not (p c) -> fail ParseError.Unsatisfied
+  | _ when not (p c) -> fail Error.Unsatisfied
   | _ when c = '\n' -> next_line &> pure c
   | _ -> next_char &> pure c
 
@@ -291,11 +291,11 @@ let exact (str : string) : string t =
     run = fun r s fail return ->
       let open State in let open Loc in let open Env in
       if s.here.offset + len > String.length r.input then
-        fail @@ ParseError.(make s.here `non_fatal @@ Unexpected (Label "end of input"))
+        fail @@ Error.(make s.here `non_fatal @@ Unexpected (Label "end of input"))
       else
         let from_input = String.sub r.input s.here.offset len in
         if str = from_input then return (map_loc (bump len) s) str else
-          fail @@ ParseError.(make s.here `non_fatal @@ NotExactly { expected = str; actual = from_input })
+          fail @@ Error.(make s.here `non_fatal @@ NotExactly { expected = str; actual = from_input })
   }
 
 (* `p1 |> not_followed_by p2` parses p1 provided that parsing p2 fails after it. *)
@@ -303,7 +303,7 @@ let not_followed_by (pr : 'a t) (pl : 'b t) : 'b t =
   bind pl @@ fun x ->
   bind (optional pr) @@ function
   | None -> pure x
-  | Some _ -> fail @@ ParseError.NotFollowedBy pr.label
+  | Some _ -> fail @@ Error.NotFollowedBy pr.label
 
 (* ***** Simple token parsers ***** *)
 
@@ -401,7 +401,7 @@ let uident = lexeme (span uword)
 let lident =
   bind (optional any_keyword) @@ function
   | None -> lexeme (span lword)
-  | Some (loc, s) -> fail_at loc.Loc.Span.start @@ ParseError.Unexpected (Label ("keyword `" ^ s ^ "'"))
+  | Some (loc, s) -> fail_at loc.Loc.Span.start @@ Error.Unexpected (Label ("keyword `" ^ s ^ "'"))
 
 (* ***** Complex syntax parsers ***** *)
 

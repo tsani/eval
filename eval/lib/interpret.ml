@@ -45,7 +45,7 @@ module State = struct
         well_knowns : Heap.addr WK.t;
     }
 
-    let initial ?(heap = Heap.Runtime.make heap_size) () = {
+    let initial (heap : Heap.Runtime.t) = {
         ep = Int64.zero;
         pc = Int64.zero;
         heap;

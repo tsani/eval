@@ -23,25 +23,28 @@ type spec = {
     constant : t;
 }
 
-module Map = Util.IntMap
+module Map = struct
+    module Internal = Util.IntMap
+    type t = {
+        map : spec Internal.t;
+        next : tag;
+    }
 
-type map = {
-    map : spec Map.t;
-    next : tag;
-}
+    let to_seq { map; _ } = Internal.to_seq map
 
-let empty_map = {
-    map = Map.empty;
-    next = 0;
-}
+    let empty = {
+        map = Internal.empty;
+        next = 0;
+    }
 
-let add c m =
-    let index = m.next in
-    let new_map = { map = Map.add m.next c m.map; next = m.next + 1 } in
-    (index, new_map)
+    let add c m =
+        let index = m.next in
+        let new_map = { map = Internal.add m.next c m.map; next = m.next + 1 } in
+        (index, new_map)
 
-let lookup tag { map; _ } = Map.find_opt tag map
+    let lookup tag { map; _ } = Internal.find_opt tag map
 
-let lookup' tag { map; _ } = match Map.find_opt tag map with
-    | Some x -> x
-    | None -> Util.invariant "[constant] the map contains all constants"
+    let lookup' tag { map; _ } = match Internal.find_opt tag map with
+        | Some x -> x
+        | None -> Util.invariant "[constant] the map contains all constants"
+end

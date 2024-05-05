@@ -77,13 +77,13 @@ end
 module State = struct
     type t = {
         fns : CloBody.map;
-        cts : Constant.map;
+        cts : Constant.Map.t;
         theta : RawER.t;
     }
 
     let initial = {
         fns = CloBody.empty_map;
-        cts = Constant.empty_map;
+        cts = Constant.Map.empty;
         theta = ER.empty;
     }
 end
@@ -112,13 +112,17 @@ module Loco = struct
 
     let pure x = fun _ s -> (s, x)
 
+    let (let*) = bind
+    let (&) a b = let _ = a in b ()
+    let upon cond a = if cond then (a & fun () -> pure ()) else pure ()
+
     let modify f = fun _ s -> (f s, ())
 
     let rec traverse (f : 'a -> 'b t) (l : 'a list) : 'b list t = match l with
     | [] -> pure []
     | x :: xs ->
-        bind (f x) @@ fun y ->
-        bind (traverse f xs) @@ fun ys ->
+        let* y = (f x) in
+        let* ys = (traverse f xs) in
         pure (y :: ys)
 
     (** Adds a new function to the current mapping, generating a new name for it. *)
@@ -134,7 +138,7 @@ module Loco = struct
 
     (** Adds a constant to the constant table, returning a fresh tag for it. *)
     let add_constant (c : Constant.spec) : Constant.tag t = fun _ctx s ->
-        let tag, cts = Constant.add c s.cts in
+        let tag, cts = Constant.Map.add c s.cts in
         ({ s with cts }, tag)
 
     (** Gets the current watermark. *)
@@ -174,18 +178,18 @@ end
     Returns the index _into the renaming_ of the given index. *)
 let er_insert (i : index) : index Loco.t =
     let open Loco in
-    bind get_env_ren @@ fun theta ->
+    let* theta = get_env_ren in
     let (theta', j) = ER.insert i theta in
-    bind (put_env_ren theta') @@ fun _ ->
+    put_env_ren theta' & fun _ ->
     pure j
 
 (** Closure-converts the index of a variable according to the active watermark, extending the
     current environment renaming in case the index refers to an environment variable. *)
 let index (i : index) : L.var Loco.t =
     let open Loco in
-    bind get_watermark @@ fun w ->
+    let* w = get_watermark in
     if i < w then pure (`bound i) else
-    bind (er_insert (i - w)) @@ fun j ->
+    let* j = er_insert (i - w) in
     pure (`env j)
 
 (** Closure-converts an environment renaming. Each index appearing in the given ER is reindexed
@@ -197,12 +201,12 @@ let env_ren (theta : RawER.t) : ER.t Loco.t = Loco.traverse index theta
     Returns the reindexed environment renaming obtained from running the inner computation. *)
 let er_pushed (m : 'a Loco.t) : (ER.t * 'a) Loco.t =
     let open Loco in
-    bind get_env_ren @@ fun theta -> (* save outer ER *)
-    bind (put_env_ren ER.empty) @@ fun _ -> (* flush active ER *)
-    bind m @@ fun x -> (* run inner computation *)
-    bind get_env_ren @@ fun theta' -> (* save inner ER *)
-    bind (put_env_ren theta) @@ fun _ -> (* restore outer ER *)
-    bind (env_ren theta') @@ fun theta' -> (* reindex saved inner ER *)
+    let* theta = get_env_ren in     (* save active ER *)
+    put_env_ren ER.empty & fun () -> (* flush active ER *)
+    let* x = m in                   (* run inner computation *)
+    let* theta' = get_env_ren in    (* save inner ER *)
+    put_env_ren theta & fun () ->    (* restore outer ER *)
+    let* theta' = env_ren theta' in  (* reindex saved inner ER *)
     pure (theta', x)
 
 (* Closure-converts the head of an application according to a watermark, extending the given
@@ -210,7 +214,8 @@ let er_pushed (m : 'a Loco.t) : (ER.t * 'a) Loco.t =
 let head : I.Term.head -> L.Term.head Loco.t =
     let open Loco in function
     | I.Term.Var (_, i) ->
-        bind (index i) @@ fun x -> pure (L.Term.Var x)
+        let* x = index i in
+        pure (L.Term.Var x)
     | I.Term.Const (_, c) -> pure (L.Term.Const c)
     | I.Term.Ref (_, r) -> pure (L.Term.Ref r)
     | I.Term.Prim (_, p) -> pure (L.Term.Prim p)
@@ -224,8 +229,8 @@ let rec pattern : I.Term.pattern -> L.Term.pattern Loco.t = let open Loco in fun
     | I.Term.WildcardPattern _ -> pure @@ L.Term.WildcardPattern
     | I.Term.VariablePattern (_, _) -> pure @@ L.Term.VariablePattern
     | I.Term.ConstPattern (_, c, ps) ->
-        bind (lookup_ctor c) @@ fun ctor ->
-        bind (traverse pattern ps) @@ fun ps ->
+        let* ctor = lookup_ctor c in
+        let* ps = traverse pattern ps in
         pure @@ L.Term.ConstPattern (ctor.tag, ps)
 
 (** Eta-expands an application of a head to account for a partial constructor or ref application.
@@ -264,9 +269,14 @@ let eta_expand tH n tS =
 (* For any head, decide what its arity is if possible. *)
 let arity_of_head = let open Loco in function
     | I.Term.Var _ -> pure `unknown
-    | I.Term.Const (_, c) -> bind (lookup_ctor c) @@ fun ctor -> pure @@ `known ctor.arity
-    | I.Term.Ref (_, r) -> bind (lookup_ref r) @@ fun r -> pure @@ `known r.arity
-    | I.Term.Prim (_, p) -> pure @@ `known (Prim.arity p)
+    | I.Term.Const (_, c) ->
+        let* ctor = lookup_ctor c in
+        pure (`known ctor.arity)
+    | I.Term.Ref (_, r) ->
+        let* r = lookup_ref r in
+        pure (`known r.arity)
+    | I.Term.Prim (_, p) ->
+        pure @@ `known (Prim.arity p)
 
 let is_static_function : I.Term.t -> bool =
     function
@@ -277,19 +287,27 @@ let literal : literal -> Constant.ref Loco.t = let open Loco in function
     | IntLit n -> pure @@ `unboxed n
     | CharLit c ->
         let n = Int64.of_int @@ Char.code c in
-        pure @@ `unboxed n
+        pure (`unboxed n)
     | BoolLit b ->
         let n = if b then 1L else 0L in
-        pure @@ `unboxed n
+        pure (`unboxed n)
     | StringLit s ->
-        bind (Loco.add_constant { constant = Constant.String s }) @@ fun tag ->
-        pure @@ `boxed tag
+        let* tag = Loco.add_constant { constant = Constant.String s } in
+        pure (`boxed tag)
 
 type 'a or_constant = [ `dyn of 'a | `constant of Constant.ref ]
 
 let to_term : L.Term.t or_constant -> L.Term.t = function
     | `dyn t -> t
     | `constant r -> L.Term.Constant r
+
+let rec all_constants = function
+    | [] -> Some []
+    | `dyn _ :: _ -> None
+    | `constant c :: cs ->
+        match all_constants cs with
+        | None -> None
+        | Some cs' -> Some (c :: cs')
 
 (* Lowers a term while also converting it to a constant if possible. *)
 let rec term : I.Term.t -> L.Term.t or_constant Loco.t =
@@ -299,30 +317,42 @@ let rec term : I.Term.t -> L.Term.t or_constant Loco.t =
         let _xs, e, w' = I.Term.collapse_funs e in
         if w' = 0 then Util.invariant "[lower] [func] must be applied to a function";
         (* w': the count of funs is the watermark to use within the function body *)
-        bind (er_pushed @@ with_watermark w' @@ term e) @@ fun (theta, e') ->
-        bind (add_function { arity = w'; body = to_term e' }) @@ fun f ->
-        pure @@ `dyn (L.Term.MkClo (theta, w', f))
+        let* (theta, e') =
+            er_pushed @@
+            with_watermark w' @@
+            term e
+        in
+        let* f = add_function { arity = w'; body = to_term e' } in
+        pure (`dyn (L.Term.MkClo (theta, w', f)))
     in
     (* Lower an application. *)
     let app tH tS =
-        bind (head tH) @@ fun tH ->
-        bind (spine tS) @@ fun tS ->
+        let* tH = head tH in
+        let* tS = spine tS in
         match tH with
         (* check if all tS are constant to form a bigger constant *)
-        | L.Term.Const _c -> failwith "todo: bigger constants from constructors"
+        | L.Term.Const c ->
+            begin match all_constants tS with
+            | None -> pure @@ `dyn (L.Term.App (tH, List.map to_term tS))
+            | Some cS ->
+                let* ctor = lookup_ctor c in
+                let* tag = add_constant { constant = Constant.Const (ctor.tag, cS) } in
+                pure (`constant (`boxed tag))
+            end
         | _ -> pure @@ `dyn (L.Term.App (tH, List.map to_term tS))
     in
     function
     | I.Term.Lit (_, lit) ->
-        bind (literal lit) @@ fun ct -> pure @@ `constant ct
+        let* ct = literal lit in
+        pure (`constant ct)
     | I.Term.Fun _ as e -> func e
     | I.Term.Let (_, rec_flag, (_, _x), e1, e2) ->
-        bind (bump_of_rec_flag rec_flag @@ term e1) @@ fun e1' ->
-        bind (bumped_watermark 1 @@ term e2) @@ fun e2' ->
+        let* e1' = bump_of_rec_flag rec_flag @@ term e1 in
+        let* e2' = bumped_watermark 1 @@ term e2 in
         pure @@ `dyn (L.Term.Let (rec_flag, to_term e1', to_term e2'))
     | I.Term.Match (_, e, cases) ->
-        bind (term e) @@ fun e' ->
-        bind (traverse case cases) @@ fun cases' ->
+        let* e' = (term e) in
+        let* cases' = (traverse case cases) in
         pure @@ `dyn (L.Term.Match (to_term e', cases'))
     | I.Term.App (_loc, tH, tS) ->
         bind (arity_of_head tH) @@ function
@@ -337,8 +367,8 @@ and case : I.Term.case -> L.Term.case Loco.t =
     let open Loco in function
     | I.Term.Case (_, p, e) ->
         let n = I.Term.count_pattern_vars p in
-        bind (pattern p) @@ fun p ->
-        bind (bumped_watermark n @@ term e) @@ fun e ->
+        let* p = pattern p in
+        let* e = bumped_watermark n @@ term e in
         pure (L.Term.Case (p, n, to_term e))
 
 and spine (tS : I.Term.spine) : L.Term.t or_constant list Loco.t = Loco.traverse term tS
@@ -353,12 +383,12 @@ let tm_decl : I.Term.t I.Decl.tm -> (ProgramInfo.decl_kind * L.Decl.tm) Loco.t =
             then `func
             else `well_known
         in
-        bind (with_ref_arity name kind 0 @@ bump_of_rec_flag rec_flag @@ term body) @@ fun x ->
+        let* x = with_ref_arity name kind 0 @@ bump_of_rec_flag rec_flag @@ term body in
         match to_term x with
         | L.Term.MkClo (theta, _, _) when not (ER.is_empty theta) ->
             Util.invariant "[lower] top-level closure is trivial"
         | L.Term.MkClo (_, n, f) ->
-            bind (remove_function f) @@ fun { body; _ } ->
+            let* { body; _ } = remove_function f in
             pure @@ (
                 `func,
                 L.Decl.({
@@ -410,13 +440,13 @@ let rec program : ProgramInfo.t ->  I.Decl.program -> ProgramInfo.t * L.Decl.pro
                     watermark = 0;
                     closure_prefix = d'.I.Decl.name;
                     info;
-                }) State.initial
+                }) { State.initial with cts = info.constants }
             in
             (* it emits a list of functions (closure bodies) to hoist to the top level
                thru its final state *)
             let info, ds =
                 program
-                    (info
+                    ({ info with constants = final_state.cts }
                     |> ProgramInfo.add_new_ref d.name (kind, d.arity)
                     |> extend_refs_with_closure_bodies final_state.fns)
                     ds

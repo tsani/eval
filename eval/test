@@ -1,9 +1,13 @@
 #!/bin/bash
 
+run_eval() {
+    dune exec eval -- "$@"
+}
+
 for f in ../examples/*.ev ; do
     if echo "$(basename "$f")" | grep -q '^_' ; then
         echo "skipping test $f"
-    elif ! ./eval "$f" ; then
+    elif ! run_eval "$f" ; then
         echo "test $f failed!"
         exit 1
     fi

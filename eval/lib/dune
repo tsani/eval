@@ -13,6 +13,7 @@
    oSet
    scope
    constant
+   constantSerializer
    basicInstruction
    pretty
    prettyCommon

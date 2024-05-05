@@ -308,11 +308,15 @@ let decl (ctx : Ctx.t) (pgm : Program.t) : Decl.tm -> Program.t =
                to the bound variables z y x respectively.
                Therefore, to get the de Bruijn indices to line up with the stack indices, we need
                to push the arguments to this function onto the stack _in order_.
-               However, we crucially need to push them _in reverse_ order (from right to left)
-               so that chained calls work properly.
+               But what happens with chained calls?
                That is, consider `f a b c` where `f` takes 1 input to return a function of 2
                inputs. If a b c are pushed onto the stack in order, then f will use index `0` to
-               refer to the value of `a`, but actually it will get `c` !
+               refer try to refer to `a`, but actually `c` is at index zero!
+               Therefore, we _have_ to push the arguments onto the stack in _reverse_ order.
+               This way `a` gets index 0 as expected by f, and then the returned function... will
+               see b at index 0 and c at index 1.
+               Uh oh, but the rest of the compiler is designed that the _last_ argument is at index
+               zero. The last argument in this example is c!
                So since the function's arguments are on the stack in the reverse order from what it
                expects, we uses a reversed identity renaming to correct this. *)
         in

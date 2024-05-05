@@ -79,14 +79,6 @@ module Interpreter = struct
 
     let void m = bind m @@ fun _ -> pure ()
 
-    (* Loads the instruction at the PC and increments the PC. *)
-    let next_instruction : Instruction.t t = fun ctx s ->
-        let i = ctx.code.(Int64.to_int s.pc) in
-        Debug.printf "PARAM:  @[%a@]@," Stack.print s.param_stack;
-        Debug.printf "RETURN: @[%a@]@," Stack.print s.return_stack;
-        Debug.printf "TRACE:  %Ld. %a@," s.pc Pretty.BasicInstruction.print_instruction i;
-        ({ s with pc = Int64.add s.pc 1L }, i)
-
     let rec traverse (f : 'a -> 'b t) : 'a list -> 'b list t = function
         | [] -> pure []
         | x :: xs ->
@@ -385,6 +377,14 @@ module Exec = struct
             | `address r -> !r
         in
         push stack_mode v & pure `running
+
+    (* Loads the instruction at the PC and increments the PC. *)
+    let next_instruction : Instruction.t t = fun ctx s ->
+        let i = ctx.code.(Int64.to_int s.pc) in
+        Debug.printf "PARAM:  @[%a@]@," Stack.print s.param_stack;
+        Debug.printf "RETURN: @[%a@]@," Stack.print s.return_stack;
+        Debug.printf "TRACE:  %Ld. %a@," s.pc Pretty.BasicInstruction.print_instruction i;
+        ({ s with pc = Int64.add s.pc 1L }, i)
 
     let dispatch = function
         | Call call_mode -> call call_mode
